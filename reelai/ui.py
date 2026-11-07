@@ -7,6 +7,7 @@ from typing import Callable
 
 from .config import Settings, load_settings, save_settings
 from .motion import STYLES
+from .montage_ai import LOOKS
 
 LANGUAGES = [("fr", "Français"), ("en", "English"), ("es", "Español"), ("de", "Deutsch"),
              ("it", "Italiano"), ("pt", "Português"), ("", "Auto")]
@@ -15,6 +16,8 @@ SOURCES = [("media_pool", "Tout le Media Pool (montage de plans)"),
            ("selected", "Clip sélectionné (vidéo parlée)")]
 PACES = ["Lent", "Moyen", "Rapide"]
 NO_MUSIC = "— Pas de musique —"
+AUTO_MUSIC = "Automatique (1re musique du Media Pool)"
+LOOK_CHOICES = ["Auto"] + LOOKS
 
 
 def _run_safely(settings: Settings, runner: Callable[[Settings, Callable], list], log: Callable) -> str:
@@ -55,6 +58,9 @@ def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None,
         row("Source", ui.ComboBox({"ID": "Source"})),
         row("Musique", ui.ComboBox({"ID": "Music"})),
         row("Rythme du montage", ui.ComboBox({"ID": "Pace"})),
+        row("Look (étalonnage)", ui.ComboBox({"ID": "Look"})),
+        ui.CheckBox({"ID": "Titles", "Text": "Titre d'accroche + appel à l'action final", "Checked": s.montage_titles,
+                     "Weight": 0}),
         row("Clé API Anthropic", ui.LineEdit({"ID": "ApiKey", "Text": s.api_key, "EchoMode": "Password",
                                                 "PlaceholderText": "sk-ant-... (ou variable ANTHROPIC_API_KEY)"})),
         row("Nombre de reels", ui.SpinBox({"ID": "Count", "Minimum": 1, "Maximum": 10, "Value": s.reel_count})),
@@ -96,7 +102,7 @@ def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None,
         ui.Button({"ID": "Close", "Text": "Fermer", "Weight": 0}),
     ])
     win = disp.AddWindow(
-        {"ID": "ReelAIWin", "WindowTitle": "ReelAI - Reels automatiques par IA", "Geometry": [80, 80, 1080, 600]},
+        {"ID": "ReelAIWin", "WindowTitle": "ReelAI - Reels automatiques par IA", "Geometry": [80, 60, 1080, 660]},
         ui.HGroup({"Spacing": 16}, [left, right]),
     )
     it = win.GetItems()
@@ -109,9 +115,14 @@ def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None,
     it["Source"].AddItems([label for _, label in SOURCES])
     src_codes = [c for c, _ in SOURCES]
     it["Source"].CurrentIndex = src_codes.index(s.source_mode) if s.source_mode in src_codes else 0
-    musics = [NO_MUSIC] + list(music_names)
+    musics = [AUTO_MUSIC, NO_MUSIC] + list(music_names)
     it["Music"].AddItems(musics)
-    it["Music"].CurrentIndex = musics.index(s.music_name) if s.music_name in musics else 0
+    if s.music_name == "-":
+        it["Music"].CurrentIndex = 1
+    else:
+        it["Music"].CurrentIndex = musics.index(s.music_name) if s.music_name in musics else 0
+    it["Look"].AddItems(LOOK_CHOICES)
+    it["Look"].CurrentIndex = LOOK_CHOICES.index(s.montage_look) if s.montage_look in LOOK_CHOICES else 0
     it["Pace"].AddItems(PACES)
     it["Pace"].CurrentIndex = PACES.index(s.montage_pace) if s.montage_pace in PACES else 1
 
@@ -158,7 +169,9 @@ def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None,
         s.api_key = it["ApiKey"].Text.strip()
         s.source_mode = src_codes[int(it["Source"].CurrentIndex)]
         music = musics[int(it["Music"].CurrentIndex)]
-        s.music_name = "" if music == NO_MUSIC else music
+        s.music_name = {AUTO_MUSIC: "", NO_MUSIC: "-"}.get(music, music)
+        s.montage_look = LOOK_CHOICES[int(it["Look"].CurrentIndex)]
+        s.montage_titles = bool(it["Titles"].Checked)
         s.montage_pace = PACES[int(it["Pace"].CurrentIndex)]
         s.reel_count = int(it["Count"].Value)
         s.target_duration = float(it["Target"].Value)
@@ -203,6 +216,7 @@ def show_tk_ui(runner, motion_runner=None, read_subtitle=None, music_names=()) -
         "source_mode": tk.StringVar(value=s.source_mode),
         "music_name": tk.StringVar(value=s.music_name),
         "montage_pace": tk.StringVar(value=s.montage_pace),
+        "montage_look": tk.StringVar(value=s.montage_look),
         "api_key": tk.StringVar(value=s.api_key),
         "reel_count": tk.IntVar(value=s.reel_count),
         "target_duration": tk.IntVar(value=int(s.target_duration)),
@@ -218,7 +232,9 @@ def show_tk_ui(runner, motion_runner=None, read_subtitle=None, music_names=()) -
     for label, key, widget in [
         ("Source (media_pool / selected)", "source_mode",
          lambda var: ttk.Combobox(frm, values=[c for c, _ in SOURCES], textvariable=var)),
-        ("Musique", "music_name", lambda var: ttk.Combobox(frm, values=[""] + list(music_names), textvariable=var)),
+        ("Musique (vide = auto, - = aucune)", "music_name",
+         lambda var: ttk.Combobox(frm, values=["", "-"] + list(music_names), textvariable=var)),
+        ("Look", "montage_look", lambda var: ttk.Combobox(frm, values=LOOK_CHOICES, textvariable=var)),
         ("Rythme", "montage_pace", lambda var: ttk.Combobox(frm, values=PACES, textvariable=var)),
         ("Clé API Anthropic", "api_key", lambda var: ttk.Entry(frm, textvariable=var, show="•", width=40)),
         ("Nombre de reels", "reel_count", lambda var: ttk.Spinbox(frm, from_=1, to=10, textvariable=var)),

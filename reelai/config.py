@@ -21,8 +21,10 @@ class Settings:
 
     # Source : "media_pool" (montage de tous les plans) ou "selected" (vidéo parlée sélectionnée)
     source_mode: str = "media_pool"
-    music_name: str = ""  # nom d'un clip audio du Media Pool ("" = pas de musique)
+    music_name: str = ""  # clip audio du Media Pool ; "" = la 1re musique trouvée, "-" = aucune
     montage_pace: str = "Moyen"  # Lent, Moyen, Rapide
+    montage_look: str = "Auto"  # Auto (choisi par l'IA), Naturel, Chaud doré, Film doux...
+    montage_titles: bool = True  # accroche au début + appel à l'action à la fin
 
     # Python où ReelAI est installé (écrit par install.py)
     python_path: str = ""

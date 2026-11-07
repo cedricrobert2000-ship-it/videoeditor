@@ -105,9 +105,15 @@ def test_plan_reels_request_shape():
 
 
 # ---------------------------------------------------- pipeline (faux Resolve)
+class FakeTI:
+    def __init__(self): self.props, self.cdl = {}, None
+    def SetProperty(self, k, v): self.props[k] = v; return True
+    def SetCDL(self, cdl): self.cdl = cdl; return True
+
+
 class FakeTimeline:
     def __init__(self, name):
-        self.name, self.settings, self.markers, self.clips = name, {}, [], []
+        self.name, self.settings, self.markers, self.clips, self.items = name, {}, [], [], []
 
     def GetName(self): return self.name
     def SetSetting(self, k, v): self.settings[k] = v; return True
@@ -131,7 +137,10 @@ class FakeMediaPool:
     def CreateEmptyTimeline(self, name):
         tl = FakeTimeline(name); self.timelines.append(tl); self.current = tl; return tl
     def AppendToTimeline(self, infos):
-        self.current.clips.extend(infos); return [object()] * len(infos)
+        self.current.clips.extend(infos)
+        items = [FakeTI() for _ in infos]
+        self.current.items.extend(items)
+        return items
     def ImportMedia(self, paths): return [SimpleNamespace(path=p) for p in paths]
 
 
@@ -318,7 +327,7 @@ def test_snap_shots_on_beats():
     shots = montage_ai.snap_shots(
         [{"clip": 1, "start": 2.0, "end": 4.3}, {"clip": 2, "start": 0.5, "end": 3.0}, {"clip": 9, "start": 0, "end": 1}],
         clips, beat=0.5, pace="Moyen")
-    assert shots[0] == {"clip": 1, "start": 2.0, "end": 4.5}  # 4.5 temps -> 5 temps (2,5 s)
+    assert shots[0] == {"clip": 1, "start": 2.0, "end": 4.5, "subject_x": 0.5, "zoom": 1.0}  # 4,6 temps -> 5
     assert shots[1]["end"] - shots[1]["start"] == pytest.approx(1.0)  # clip court : 2 temps
     assert shots[1]["end"] <= 1.2 and len(shots) == 2
 
@@ -357,10 +366,13 @@ def test_media_pool_montage(tmp_path):
     FakeTimeline.GetSetting = lambda self, k: "25"
     FakeTimeline.GetStartFrame = lambda self: 90000
 
+    items[0].props["Resolution"] = "3840x2160"
     payload = {"reels": [{"title": "Avant / après", "description": "Transformation", "hashtags": ["coiffure"],
-                          "shots": [{"clip": 2, "start": 0.0, "end": 1.9}, {"clip": 1, "start": 1.0, "end": 2.1}]}]}
+                          "look": "Chaud doré", "hook_text": "Ta nouvelle coupe", "end_text": "Réserve vite",
+                          "shots": [{"clip": 2, "start": 0.0, "end": 1.9, "beats": 4, "subject_x": 0.5, "zoom": 1.0},
+                                    {"clip": 1, "start": 1.0, "end": 2.1, "beats": 3, "subject_x": 0.8, "zoom": 1.2}]}]}
     client = fake_client(payload)
-    s = Settings(output_dir=str(tmp_path / "out"), music_name="Olivia", montage_pace="Moyen", instructions="simple")
+    s = Settings(output_dir=str(tmp_path / "out"), music_name="", montage_pace="Moyen", instructions="simple")
     results = pipeline.run(session, s, log=lambda m: None, backend=LocalBackend(ai_client=client))
 
     content = fake_client.last_kwargs["messages"][0]["content"]
@@ -373,6 +385,14 @@ def test_media_pool_montage(tmp_path):
     assert [(c["startFrame"], c["endFrame"]) for c in video] == [(0, 49), (50, 123)]
     assert audio[0]["trackIndex"] == 1 and audio[0]["recordFrame"] == 90000
     assert results[0].plan.hashtags == ["#coiffure"]
+    # plan A (4K, sujet à droite, zoom 1.2) : décalé vers la gauche, borné au bord de l'image
+    ta = tl.items[1]
+    scaled_w = 3840 * (1920 / 2160) * 1.2
+    assert ta.props["ZoomX"] == pytest.approx(1.2)
+    assert ta.props["Pan"] == pytest.approx(-0.3 * scaled_w)
+    assert ta.cdl["Saturation"] == "1.08"
+    # plan B : résolution inconnue -> 1920x1080 par défaut, centré
+    assert tl.items[0].props["Pan"] == pytest.approx(0.0)
     assert os.path.exists(results[0].caption_path)
 
 
@@ -389,3 +409,13 @@ def test_worker_command_forces_arm64_on_apple_silicon(monkeypatch):
     assert be.worker_command("/py")[:3] == ["/usr/bin/arch", "-arm64", "/py"]
     monkeypatch.setattr(be, "_apple_silicon", lambda: False)
     assert be.worker_command("/py") == ["/py", "-m", "reelai.worker"]
+
+
+def test_snap_uses_beats_and_varies_lengths():
+    clips = {1: {"duration": 20.0}}
+    shots = montage_ai.snap_shots(
+        [{"clip": 1, "start": 0, "end": 1, "beats": 8, "subject_x": 2, "zoom": 3},
+         {"clip": 1, "start": 5, "end": 6, "beats": 2, "subject_x": 0.2, "zoom": 1.1}],
+        clips, beat=0.5, pace="Rapide")
+    assert [round(s["end"] - s["start"], 2) for s in shots] == [4.0, 1.0]
+    assert shots[0]["subject_x"] == 1.0 and shots[0]["zoom"] == 1.3  # bornés

@@ -205,14 +205,17 @@ class ResolveSession:
             duration = frames / fps if frames else _parse_duration(item.GetClipProperty("Duration"), fps)
             if duration < min_seconds:
                 continue
+            res = re.findall(r"\d+", str(item.GetClipProperty("Resolution") or ""))
+            w, h = (int(res[0]), int(res[1])) if len(res) >= 2 else (1920, 1080)
             out.append({"id": len(out) + 1, "name": item.GetName(), "path": path,
                         "fps": fps, "frames": frames or int(duration * fps), "duration": round(duration, 3),
-                        "item": item})
+                        "width": w, "height": h, "item": item})
         return out
 
     def build_montage_timeline(self, name: str, shots: List[dict], clips_by_id: dict,
                                music: Optional[dict] = None, music_info: Optional[dict] = None,
-                               vertical: bool = True, width: int = 1080, height: int = 1920, log=print):
+                               vertical: bool = True, width: int = 1080, height: int = 1920, log=print,
+                               look: str = "Naturel", hook_text: str = "", end_text: str = ""):
         self.media_pool.SetCurrentFolder(self._bin())
         timeline = self.media_pool.CreateEmptyTimeline(self._unique_timeline_name(name))
         if not timeline:
@@ -227,7 +230,7 @@ class ResolveSession:
                 log("Attention : format vertical non appliqué.")
 
         tfps = self.timeline_fps(timeline)
-        infos, cum = [], 0.0
+        infos, placed, cum = [], [], 0.0
         for s in shots:
             clip = clips_by_id[s["clip"]]
             length = s["end"] - s["start"]
@@ -242,8 +245,16 @@ class ResolveSession:
             if music:
                 info["mediaType"] = 1  # image seule : la musique remplace le son
             infos.append(info)
-        if not infos or not self.media_pool.AppendToTimeline(infos):
+            placed.append((s, clip))
+        items = self.media_pool.AppendToTimeline(infos) if infos else None
+        if not items:
             raise RuntimeError("Resolve a refusé d'ajouter les plans sur la timeline.")
+
+        styled = 0
+        for ti, (s, clip) in zip(list(items), placed):
+            styled += self._style_shot(ti, s, clip, width, height, vertical, look)
+        if styled:
+            log(f"Recadrage, zoom et look « {look} » appliqués sur {styled} plan(s).")
 
         if music:
             mfps = music["fps"] or tfps
@@ -253,9 +264,49 @@ class ResolveSession:
             ok = self.media_pool.AppendToTimeline([{
                 "mediaPoolItem": music["item"], "startFrame": start, "endFrame": end,
                 "mediaType": 2, "trackIndex": 1, "recordFrame": timeline.GetStartFrame()}])
-            if not ok:
-                log("Musique non posée automatiquement : glisse-la sur la piste audio.")
+            if ok:
+                log(f"Musique « {music['name']} » posée sur A1, calée sur le premier temps.")
+            else:
+                log("Musique non posée automatiquement : glisse-la sur la piste audio A1.")
+
+        total_frames = int(round(cum * tfps))
+        start = timeline.GetStartFrame()
+        if hook_text:
+            if not self.insert_title(timeline, hook_text, start, track=2):
+                log("Titre d'accroche non ajouté automatiquement.")
+        if end_text:
+            self.insert_title(timeline, end_text, start + max(0, total_frames - int(3 * tfps)), track=2)
         return timeline
+
+    # Étalonnages simples (CDL) appliqués au 1er nœud de chaque plan.
+    LOOKS = {
+        "Chaud doré": ("1.06 1.0 0.9", "0.01 0.004 -0.012", "1.0 1.0 1.02", "1.08"),
+        "Film doux": ("0.94 0.94 0.95", "0.035 0.033 0.04", "1.06 1.05 1.04", "0.82"),
+        "Lumineux clean": ("1.08 1.08 1.08", "0.012 0.012 0.015", "0.94 0.94 0.94", "1.05"),
+        "Noir & blanc": ("1.06 1.06 1.06", "0.0 0.0 0.0", "1.12 1.12 1.12", "0.0"),
+    }
+
+    def _style_shot(self, ti, shot: dict, clip: dict, width: int, height: int,
+                    vertical: bool, look: str) -> int:
+        try:
+            zoom = float(shot.get("zoom", 1.0))
+            if vertical and clip.get("width") and clip.get("height"):
+                # Image recadrée pour remplir le 9:16, puis décalée vers le sujet.
+                scale = max(width / clip["width"], height / clip["height"]) * zoom
+                scaled_w = clip["width"] * scale
+                max_pan = max(0.0, (scaled_w - width) / 2)
+                pan = (0.5 - float(shot.get("subject_x", 0.5))) * scaled_w
+                ti.SetProperty("Pan", max(-max_pan, min(max_pan, pan)))
+            if zoom != 1.0:
+                ti.SetProperty("ZoomX", zoom)
+                ti.SetProperty("ZoomY", zoom)
+            if look in self.LOOKS:
+                slope, offset, power, sat = self.LOOKS[look]
+                ti.SetCDL({"NodeIndex": "1", "Slope": slope, "Offset": offset,
+                           "Power": power, "Saturation": sat})
+            return 1
+        except Exception:
+            return 0
 
     # ------------------------------------------------------------------ motion
     @staticmethod

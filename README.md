@@ -58,7 +58,14 @@ Ce mode convient aux plans tournés sans parole : salon, produit, lifestyle, év
 2. Dans ReelAI, choisis **Source : Tout le Media Pool**, ta **Musique**, puis le **Rythme** (Lent, Moyen ou Rapide).
 3. Clique sur **🎬 Générer les reels**.
 
-ReelAI extrait des images de chaque clip. **Claude les regarde** et compose un montage de pro : un plan d'ouverture qui accroche, une mini-histoire, des valeurs de plan variées, sans plans flous ou ratés, et le plus fort à la fin. Les coupes sont **calées sur le tempo de la musique**, détecté automatiquement. La musique est posée sur A1 et démarre sur un temps fort. Les plans gardent leur image, sans leur son.
+ReelAI extrait des images de chaque clip. **Claude les regarde** et compose un montage de pro :
+- un plan d'ouverture qui accroche, une mini-histoire et le plus fort à la fin, sans plans flous ou ratés ;
+- des **durées de plans variées**, comptées en temps de musique (2, 4 ou 8 temps), avec des coupes **calées sur le tempo** détecté automatiquement ;
+- un **recadrage 9:16 intelligent** : chaque plan est cadré sur le sujet et non au centre, avec un léger zoom sur les détails ;
+- un **look** d'étalonnage cohérent sur tous les plans (Chaud doré, Film doux, Lumineux clean, Noir & blanc, ou choisi par l'IA) ;
+- un **titre d'accroche** au début et un **appel à l'action** à la fin, en Text+ modifiable.
+
+Par défaut, la musique est la première trouvée dans le Media Pool. Elle est posée sur A1 et démarre sur un temps fort. Les plans gardent leur image, sans leur son.
 
 ### Mode « Clip sélectionné » (vidéo parlée)
 

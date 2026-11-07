@@ -70,10 +70,18 @@ def run_media_pool(session, settings, log, backend) -> List[ReelResult]:
     log(f"{len(clips)} clip(s) vidéo trouvés dans le Media Pool.")
 
     music = None
-    if settings.music_name:
-        music = next((m for m in session.list_clips("audio") if m["name"] == settings.music_name), None)
-        if not music:
-            log(f"Musique « {settings.music_name} » introuvable : montage sans musique.")
+    if settings.music_name != "-":
+        musics = session.list_clips("audio")
+        if settings.music_name:
+            music = next((m for m in musics if m["name"] == settings.music_name), None)
+            if not music:
+                log(f"Musique « {settings.music_name} » introuvable dans le Media Pool.")
+        elif musics:
+            music = musics[0]
+        if music:
+            log(f"Musique : {music['name']}")
+    if not music:
+        log("Aucune musique : coupes libres, sans calage sur le tempo.")
 
     payload_clips = [{k: c[k] for k in ("id", "name", "path", "duration")} for c in clips]
     plan = backend.run("plan_montage", {"clips": payload_clips, "music": music["path"] if music else None},
@@ -92,7 +100,10 @@ def run_media_pool(session, settings, log, backend) -> List[ReelResult]:
         log(f"Montage de « {name} » : {len(r['shots'])} plans, {total:.1f} s")
         timeline = session.build_montage_timeline(
             name, r["shots"], by_id, music=music, music_info=plan.get("music"),
-            vertical=settings.vertical, width=settings.width, height=settings.height, log=log)
+            vertical=settings.vertical, width=settings.width, height=settings.height, log=log,
+            look=r.get("look", "Naturel"),
+            hook_text=r.get("hook_text", "") if settings.montage_titles else "",
+            end_text=r.get("end_text", "") if settings.montage_titles else "")
         res = ReelResult(plan=rp, timeline_name=timeline.GetName())
         session.add_marker(timeline, rp.title, "\n".join([rp.description, " ".join(rp.hashtags)]))
         res.caption_path = _write_caption(out_dir, timeline.GetName(), rp)

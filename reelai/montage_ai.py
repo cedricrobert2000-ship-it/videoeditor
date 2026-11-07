@@ -18,23 +18,56 @@ PACE = {  # durée de plan visée, durée minimale (s)
     "Rapide": (1.0, 0.5),
 }
 
+LOOKS = ["Naturel", "Chaud doré", "Film doux", "Lumineux clean", "Noir & blanc"]
+
 SYSTEM_PROMPT = """Tu es un monteur vidéo senior qui fait des reels Instagram/TikTok \
 haut de gamme pour des marques. On te montre des images extraites de chaque clip \
-disponible (avec l'instant exact de chaque image dans le clip). Tu construis le montage.
+disponible (avec l'instant exact de chaque image dans le clip). Tu construis le montage \
+final, vertical 9:16, comme le ferait un studio pro.
 
-Règles d'un montage pro :
-- Les 2 premières secondes accrochent : ouvre sur le plan le plus beau ou le plus intrigant.
-- Raconte une mini-histoire cohérente (ex. pour un salon : ambiance, geste du \
-professionnel, détails, transformation, résultat final, cliente heureuse). Termine sur le \
-plan le plus fort (souvent le résultat).
-- Varie les valeurs de plan (large, moyen, gros plan, détail) ; évite deux plans très \
-similaires à la suite.
-- N'utilise que des moments nets et bien cadrés : écarte les images floues, noires, \
-tremblées, mal exposées ou manifestement accidentelles.
-- Choisis start/end autour des instants où l'image est belle, à l'intérieur de la durée du clip.
-- Ne réutilise pas le même passage d'un clip dans un même reel.
-- Si plusieurs reels sont demandés, fais-les vraiment différents (angle, ouverture, plans).
-- Titre, description et hashtags en français, adaptés au réseau social."""
+Narration :
+- Les 2 premières secondes accrochent : ouvre sur un plan intrigant ou très beau.
+- Raconte une mini-histoire (ex. salon de coiffure : ambiance du lieu, geste précis du \
+coiffeur, détails texture/mèches/produits, transformation, résultat final en mouvement, \
+cliente qui sourit). Termine sur le plan le plus fort.
+- Alterne les valeurs de plan (large, moyen, gros plan, détail) ; jamais deux plans \
+quasi identiques à la suite.
+- N'utilise que des moments nets, bien exposés et bien cadrés ; écarte tout ce qui est \
+flou, noir, tremblé ou accidentel.
+
+Rythme (TRÈS IMPORTANT) :
+- Les durées des plans doivent VARIER pour créer un rythme vivant ; des plans tous de la \
+même durée sont une faute. Typiquement : 2-3 plans d'ouverture plus courts, des plans \
+« héros » (geste clé, résultat) nettement plus longs, un plan final le plus long.
+- Si une musique est indiquée, exprime chaque durée en nombre de temps (`beats`) : \
+2, 3, 4, 6 ou 8 temps, en privilégiant 4 et 8 (une mesure, deux mesures) pour les plans \
+importants. Sinon, `beats` = 0 et seules start/end comptent.
+
+Cadrage 9:16 : le clip sera recadré en vertical. Pour chaque plan, `subject_x` = position \
+horizontale du sujet principal dans l'image (0 = bord gauche, 0.5 = centre, 1 = bord droit), \
+et `zoom` entre 1.0 et 1.3 (1.1-1.25 sur les détails pour plus d'impact, 1.0 sur les plans larges).
+
+Finitions :
+- `look` : étalonnage cohérent pour toute la vidéo, adapté à la marque.
+- `hook_text` : accroche courte affichée au début (3 à 6 mots, percutante, sans hashtag).
+- `end_text` : appel à l'action final (2 à 5 mots, ex. « Réserve ton rendez-vous »).
+
+Titre, description, hashtags et textes en français. Si plusieurs reels sont demandés, \
+fais-les vraiment différents (ouverture, angle, plans)."""
+
+SHOT = {
+    "type": "object",
+    "properties": {
+        "clip": {"type": "integer"},
+        "start": {"type": "number"},
+        "end": {"type": "number"},
+        "beats": {"type": "integer"},
+        "subject_x": {"type": "number"},
+        "zoom": {"type": "number"},
+    },
+    "required": ["clip", "start", "end", "beats", "subject_x", "zoom"],
+    "additionalProperties": False,
+}
 
 SCHEMA = {
     "type": "object",
@@ -47,21 +80,12 @@ SCHEMA = {
                     "title": {"type": "string"},
                     "description": {"type": "string"},
                     "hashtags": {"type": "array", "items": {"type": "string"}},
-                    "shots": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "clip": {"type": "integer"},
-                                "start": {"type": "number"},
-                                "end": {"type": "number"},
-                            },
-                            "required": ["clip", "start", "end"],
-                            "additionalProperties": False,
-                        },
-                    },
+                    "look": {"type": "string", "enum": LOOKS},
+                    "hook_text": {"type": "string"},
+                    "end_text": {"type": "string"},
+                    "shots": {"type": "array", "items": SHOT},
                 },
-                "required": ["title", "description", "hashtags", "shots"],
+                "required": ["title", "description", "hashtags", "look", "hook_text", "end_text", "shots"],
                 "additionalProperties": False,
             },
         }
@@ -161,6 +185,13 @@ def detect_beats(path: str, max_seconds: float = 240.0) -> dict:
             "duration": y.size / sr}
 
 
+def _clamp(v, lo, hi, default):
+    try:
+        return min(max(float(v), lo), hi)
+    except (TypeError, ValueError):
+        return default
+
+
 def snap_shots(shots: List[dict], clips: dict, beat: Optional[float], pace: str) -> List[dict]:
     """Ajuste chaque plan pour que les coupes tombent sur les temps de la musique."""
     target, min_shot = PACE.get(pace, PACE["Moyen"])
@@ -173,14 +204,18 @@ def snap_shots(shots: List[dict], clips: dict, beat: Optional[float], pace: str)
         start = min(max(0.0, float(s["start"])), max(0.0, dur_clip - 0.3))
         length = max(float(s["end"]) - start, min_shot)
         if beat:
-            n = max(math.ceil(min_shot / beat - 1e-6), int(round(length / beat)), 1)
+            min_beats = max(1, math.ceil(min_shot / beat - 1e-6))
+            n = int(s.get("beats") or 0) or int(round(length / beat))
+            n = max(min_beats, n)
             while n > 1 and n * beat > dur_clip:
                 n -= 1
             length = n * beat
         length = min(length, dur_clip)
         if start + length > dur_clip:
             start = max(0.0, dur_clip - length)
-        out.append({"clip": s["clip"], "start": round(start, 3), "end": round(start + length, 3)})
+        out.append({"clip": s["clip"], "start": round(start, 3), "end": round(start + length, 3),
+                    "subject_x": _clamp(s.get("subject_x"), 0.0, 1.0, 0.5),
+                    "zoom": _clamp(s.get("zoom"), 1.0, 1.3, 1.0)})
     return out
 
 
@@ -194,13 +229,24 @@ def _build_content(clips: List[dict], music: Optional[dict], settings: Settings,
         raise RuntimeError(f"Outils de lecture vidéo indisponibles : {exc}") from exc
 
     clips = sorted(clips, key=lambda c: -c["duration"])[:MAX_IMAGES]
-    per_clip = max(1, min(3, MAX_IMAGES // max(1, len(clips))))
+    # 1 image par clip, puis les images restantes vont aux clips les plus longs (max 3).
+    counts = {c["id"]: 1 for c in clips}
+    spare = MAX_IMAGES - len(clips)
+    while spare > 0 and any(v < 3 for v in counts.values()):
+        for c in clips:
+            if spare > 0 and counts[c["id"]] < 3:
+                counts[c["id"]] += 1
+                spare -= 1
     target, _ = PACE.get(settings.montage_pace, PACE["Moyen"])
 
     rhythm = f"Rythme demandé : {settings.montage_pace.lower()} (plans d'environ {target:.1f} s)."
     if music:
-        rhythm += (f" Musique : {music['bpm']} BPM, un temps = {music['beat']:.2f} s ; les coupes "
-                   f"seront calées sur les temps.")
+        rhythm += (f" Musique : {music['bpm']} BPM, un temps = {music['beat']:.2f} s ; donne la "
+                   f"durée de chaque plan en `beats`, les coupes seront calées sur les temps.")
+    else:
+        rhythm += " Pas de musique : `beats` = 0."
+    if settings.montage_look and settings.montage_look != "Auto":
+        rhythm += f" Look imposé : {settings.montage_look}."
     extra = f"\nConsignes du créateur : {settings.instructions.strip()}" if settings.instructions.strip() else ""
     content: List[dict] = [{"type": "text", "text": (
         f"Monte {settings.reel_count} reel(s) vertical(aux) d'environ {settings.target_duration:.0f} s "
@@ -209,7 +255,8 @@ def _build_content(clips: List[dict], music: Optional[dict], settings: Settings,
 
     for n, clip in enumerate(clips, 1):
         d = clip["duration"]
-        times = [round(d * (i + 0.5) / per_clip, 2) for i in range(per_clip)]
+        k = counts[clip["id"]]
+        times = [round(d * (i + 0.5) / k, 2) for i in range(k)]
         log(f"Analyse des images {n}/{len(clips)} : {clip['name']}")
         try:
             frames = extract_frames(clip["path"], times)
@@ -252,7 +299,7 @@ def plan_montage(clips: List[dict], music_path: Optional[str], settings: Setting
     params = dict(
         model=settings.model, max_tokens=16000, system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": content}],
-        output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA}},
+        output_config={"effort": "high", "format": {"type": "json_schema", "schema": SCHEMA}},
     )
     try:
         resp = client.beta.messages.create(betas=["server-side-fallback-2026-07-01"], fallbacks="default", **params)
@@ -271,7 +318,11 @@ def plan_montage(clips: List[dict], music_path: Optional[str], settings: Setting
         shots = snap_shots(r.get("shots", []), by_id, beat, settings.montage_pace)
         if shots:
             tags = ["#" + t.strip().lstrip("#").replace(" ", "") for t in r.get("hashtags", []) if t.strip()]
+            look = r.get("look", "Naturel")
+            if settings.montage_look and settings.montage_look != "Auto":
+                look = settings.montage_look
             reels.append({"title": r.get("title", "Reel"), "description": r.get("description", ""),
-                          "hashtags": tags, "shots": shots})
+                          "hashtags": tags, "shots": shots, "look": look,
+                          "hook_text": r.get("hook_text", "").strip(), "end_text": r.get("end_text", "").strip()})
     log(f"Claude propose {len(reels)} montage(s).")
     return {"music": music, "reels": reels}
