@@ -29,8 +29,10 @@ cd videoeditor
 ```
 
 ```bash
-python install.py
+python3 install.py
 ```
+
+> Sur **Mac**, la commande est `python3` (et non `python`). Si tu as installé Python 3.12 depuis python.org, utilise `python3.12 install.py`. Sur Windows, la commande est `python install.py`.
 
 Le script installe les dépendances (`anthropic`, `faster-whisper`). Il copie aussi `ReelAI.py` dans le dossier Scripts de Resolve :
 
