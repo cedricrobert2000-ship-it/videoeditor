@@ -212,10 +212,25 @@ class ResolveSession:
                         "width": w, "height": h, "item": item})
         return out
 
+    def selected_audio_name(self) -> str:
+        """Nom de la musique sélectionnée dans le Media Pool (ou "")."""
+        try:
+            selected = self.media_pool.GetSelectedClips() or []
+            if isinstance(selected, dict):
+                selected = list(selected.values())
+            for item in selected:
+                if _clip_type(item).startswith("audio"):
+                    return item.GetName()
+        except Exception:
+            pass
+        return ""
+
     def build_montage_timeline(self, name: str, shots: List[dict], clips_by_id: dict,
                                music: Optional[dict] = None, music_info: Optional[dict] = None,
                                vertical: bool = True, width: int = 1080, height: int = 1920, log=print,
-                               look: str = "Naturel", hook_text: str = "", end_text: str = ""):
+                               look: str = "Naturel"):
+        """Crée la timeline. Renvoie (timeline, positions) avec positions[index du plan] =
+        (frame d'enregistrement, durée en frames de timeline)."""
         self.media_pool.SetCurrentFolder(self._bin())
         timeline = self.media_pool.CreateEmptyTimeline(self._unique_timeline_name(name))
         if not timeline:
@@ -231,7 +246,8 @@ class ResolveSession:
 
         tfps = self.timeline_fps(timeline)
         infos, placed, cum = [], [], 0.0
-        for s in shots:
+        positions, record = {}, timeline.GetStartFrame()
+        for index, s in enumerate(shots):
             clip = clips_by_id[s["clip"]]
             length = s["end"] - s["start"]
             t_frames = int(round((cum + length) * tfps)) - int(round(cum * tfps))
@@ -246,6 +262,8 @@ class ResolveSession:
                 info["mediaType"] = 1  # image seule : la musique remplace le son
             infos.append(info)
             placed.append((s, clip))
+            positions[index] = (record, t_frames)
+            record += t_frames
         items = self.media_pool.AppendToTimeline(infos) if infos else None
         if not items:
             raise RuntimeError("Resolve a refusé d'ajouter les plans sur la timeline.")
@@ -269,14 +287,7 @@ class ResolveSession:
             else:
                 log("Musique non posée automatiquement : glisse-la sur la piste audio A1.")
 
-        total_frames = int(round(cum * tfps))
-        start = timeline.GetStartFrame()
-        if hook_text:
-            if not self.insert_title(timeline, hook_text, start, track=2):
-                log("Titre d'accroche non ajouté automatiquement.")
-        if end_text:
-            self.insert_title(timeline, end_text, start + max(0, total_frames - int(3 * tfps)), track=2)
-        return timeline
+        return timeline, positions
 
     # Étalonnages simples (CDL) appliqués au 1er nœud de chaque plan.
     LOOKS = {
@@ -351,7 +362,9 @@ class ResolveSession:
             notes.append("Transcript: " + words[:3000])
         return "\n".join(notes)
 
-    def insert_overlay(self, timeline, media_path: str, record_frame: int, track: int = 2):
+    def insert_overlay(self, timeline, media_path: str, record_frame: int, track: int = 2,
+                       max_frames: int = 0):
+        """Pose un clip sur une piste au-dessus. max_frames : durée max en frames de timeline."""
         self.project.SetCurrentTimeline(timeline)
         self.media_pool.SetCurrentFolder(self._bin())
         items = self.media_pool.ImportMedia([media_path]) or []
@@ -366,13 +379,18 @@ class ResolveSession:
             frames = 0
         info = {"mediaPoolItem": item, "startFrame": 0, "trackIndex": track,
                 "recordFrame": record_frame, "mediaType": 1}
+        if max_frames > 0:
+            src_fps = _parse_fps(item.GetClipProperty("FPS"))
+            wanted = int(round(max_frames * src_fps / self.timeline_fps(timeline)))
+            frames = min(frames, wanted) if frames > 0 else wanted
         if frames > 0:
             info["endFrame"] = frames - 1
         if not self.media_pool.AppendToTimeline([info]):
             raise RuntimeError("Resolve a refusé de poser le motion sur la timeline.")
 
     def insert_title(self, timeline, text: str, record_frame: int, track: int = 3,
-                     seconds: float = 5.0, rgb=(1.0, 1.0, 1.0)) -> bool:
+                     seconds: float = 5.0, rgb=(1.0, 1.0, 1.0), animate: bool = False,
+                     duration_frames: int = 0) -> bool:
         """Ajoute un titre Text+ net (typo parfaite) au-dessus du motion."""
         try:
             while (timeline.GetTrackCount("video") or 0) < track:
@@ -390,9 +408,33 @@ class ResolveSession:
             tool.SetInput("Size", 0.09)
             for name, value in zip(("Red1", "Green1", "Blue1"), rgb):
                 tool.SetInput(name, value)
+            if animate:
+                self._animate_text(tool, duration_frames or int(seconds * self.timeline_fps(timeline)),
+                                   self.timeline_fps(timeline))
             return True
         except Exception:
             return False
+
+    @staticmethod
+    def _animate_text(tool, duration: int, fps: float) -> None:
+        """Animation Text+ : apparition en fondu + léger grossissement, disparition en fin de plan."""
+        intro, outro = int(fps * 0.5), int(fps * 0.35)
+        end = max(duration - 1, intro + outro + 1)
+        keys = {
+            "Size": [(0, 0.075), (intro, 0.09), (end, 0.095)],
+            "Opacity1": [(0, 0.0), (intro, 1.0), (end - outro, 1.0), (end, 0.0)],
+        }
+        for name, points in keys.items():
+            try:
+                tool.AddModifier(name, "BezierSpline")
+                for frame, value in points:
+                    tool.SetInput(name, value, frame)
+            except Exception:
+                pass
+        try:
+            tool.SetInput("Center", {1: 0.5, 2: 0.3})  # tiers bas : ne cache pas les visages
+        except Exception:
+            pass
 
     def _frame_to_tc(self, timeline, frame: int) -> str:
         nominal = int(round(self.timeline_fps(timeline)))

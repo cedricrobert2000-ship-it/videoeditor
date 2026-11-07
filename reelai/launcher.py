@@ -49,7 +49,8 @@ def launch(scope: Optional[dict] = None, headless: bool = False) -> None:
     if fusion is not None and bmd is not None and getattr(fusion, "UIManager", None):
         try:
             from .ui import show_resolve_ui
-            show_resolve_ui(fusion, bmd, runner, motion_runner, read_subtitle, music_names)
+            show_resolve_ui(fusion, bmd, runner, motion_runner, read_subtitle, music_names,
+                            selected_music=session.selected_audio_name)
             return
         except Exception as exc:  # UIManager absent ou incomplet selon la version
             print(f"[ReelAI] Interface Resolve indisponible ({exc}), passage à Tkinter.")

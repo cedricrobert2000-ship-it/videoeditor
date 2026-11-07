@@ -76,8 +76,9 @@ def run_media_pool(session, settings, log, backend) -> List[ReelResult]:
             music = next((m for m in musics if m["name"] == settings.music_name), None)
             if not music:
                 log(f"Musique « {settings.music_name} » introuvable dans le Media Pool.")
-        elif musics:
-            music = musics[0]
+        else:
+            selected = session.selected_audio_name()
+            music = next((m for m in musics if m["name"] == selected), None) or (musics[0] if musics else None)
         if music:
             log(f"Musique : {music['name']}")
     if not music:
@@ -98,13 +99,15 @@ def run_media_pool(session, settings, log, backend) -> List[ReelResult]:
         total = sum(s["end"] - s["start"] for s in r["shots"])
         name = f"Reel {i} - {_safe_name(rp.title)}"
         log(f"Montage de « {name} » : {len(r['shots'])} plans, {total:.1f} s")
-        timeline = session.build_montage_timeline(
+        timeline, positions = session.build_montage_timeline(
             name, r["shots"], by_id, music=music, music_info=plan.get("music"),
             vertical=settings.vertical, width=settings.width, height=settings.height, log=log,
-            look=r.get("look", "Naturel"),
-            hook_text=r.get("hook_text", "") if settings.montage_titles else "",
-            end_text=r.get("end_text", "") if settings.montage_titles else "")
+            look=r.get("look", "Naturel"))
         res = ReelResult(plan=rp, timeline_name=timeline.GetName())
+        texts = [t for t in r.get("texts", []) if t["shot"] in positions]
+        if texts:
+            res.warnings += add_shot_texts(session, timeline, texts, r["shots"], positions, by_id,
+                                           settings, out_dir, backend, log, look=r.get("look", ""))
         session.add_marker(timeline, rp.title, "\n".join([rp.description, " ".join(rp.hashtags)]))
         res.caption_path = _write_caption(out_dir, timeline.GetName(), rp)
         if settings.render:
@@ -112,6 +115,55 @@ def run_media_pool(session, settings, log, backend) -> List[ReelResult]:
             jobs.append(job) if job else res.warnings.append("Rendu non ajouté à la file d'attente.")
         results.append(res)
     return _finish(session, settings, results, jobs, out_dir, log)
+
+
+TEXT_COLORS = {"Chaud doré": "warm ivory white with a subtle golden glow",
+               "Noir & blanc": "pure white", "Film doux": "soft cream white"}
+
+
+def add_shot_texts(session, timeline, texts, shots, positions, clips_by_id, settings, out_dir,
+                   backend, log, look: str = "") -> List[str]:
+    """Ajoute les textes sur les plans choisis : animés par Higgsfield, sinon Text+ animé."""
+    warnings: List[str] = []
+    fps = session.timeline_fps(timeline)
+    pending = list(texts)
+
+    if settings.text_animation == "higgsfield":
+        if not (settings.higgsfield_key or os.environ.get("HF_KEY")):
+            log("Pas de clé Higgsfield : textes animés par Resolve à la place.")
+        else:
+            items = []
+            for t in texts:
+                shot = shots[t["shot"]]
+                _, frames = positions[t["shot"]]
+                items.append({"path": clips_by_id[shot["clip"]]["path"],
+                              "time": (shot["start"] + shot["end"]) / 2,
+                              "subject_x": shot.get("subject_x", 0.5), "text": t["text"],
+                              "seconds": frames / fps,
+                              "color": TEXT_COLORS.get(look, "white with a soft shadow")})
+            try:
+                outcomes = backend.run("animate_texts", {"items": items, "folder": out_dir}, settings, log)["results"]
+            except Exception as exc:
+                log(f"Higgsfield indisponible ({exc}) : textes animés par Resolve à la place.")
+                outcomes = [{"error": str(exc)}] * len(texts)
+            pending = []
+            for t, outcome in zip(texts, outcomes):
+                record, frames = positions[t["shot"]]
+                if outcome.get("path"):
+                    try:
+                        session.insert_overlay(timeline, outcome["path"], record, track=2, max_frames=frames)
+                        continue
+                    except Exception as exc:
+                        log(f"Clip animé non posé ({exc})")
+                pending.append(t)
+
+    for t in pending:  # Text+ animé par Resolve
+        record, frames = positions[t["shot"]]
+        if not session.insert_title(timeline, t["text"], record, track=3, animate=True, duration_frames=frames):
+            warnings.append(f"Texte « {t['text']} » non ajouté : ajoute un Text+ à la main.")
+    if texts:
+        log(f"{len(texts) - len(warnings)} texte(s) ajouté(s) sur les plans.")
+    return warnings
 
 
 # ------------------------------------------------------- vidéo parlée

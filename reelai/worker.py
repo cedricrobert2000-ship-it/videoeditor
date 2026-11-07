@@ -43,6 +43,11 @@ def run_task(task: str, payload: dict, log: Callable[[str], None] = print,
         from .montage_ai import plan_montage
         return plan_montage(payload["clips"], payload.get("music"), settings, log=log, client=ai_client)
 
+    if task == "animate_texts":
+        from .motion import animate_texts
+        return {"results": animate_texts(payload["items"], payload["folder"], settings, log=log,
+                                         hf_client=hf_client)}
+
     if task == "motion":
         from .motion import download, generate_video, write_brief
         brief = write_brief(payload["text"], payload.get("context", ""), settings, client=ai_client)

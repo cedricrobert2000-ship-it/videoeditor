@@ -63,9 +63,14 @@ ReelAI extrait des images de chaque clip. **Claude les regarde** et compose un m
 - des **durées de plans variées**, comptées en temps de musique (2, 4 ou 8 temps), avec des coupes **calées sur le tempo** détecté automatiquement ;
 - un **recadrage 9:16 intelligent** : chaque plan est cadré sur le sujet et non au centre, avec un léger zoom sur les détails ;
 - un **look** d'étalonnage cohérent sur tous les plans (Chaud doré, Film doux, Lumineux clean, Noir & blanc, ou choisi par l'IA) ;
-- un **titre d'accroche** au début et un **appel à l'action** à la fin, en Text+ modifiable.
+- des **textes sur les plans** (accroche, message, appel à l'action) quand la case est cochée ou que tu le demandes dans les consignes. Claude choisit les plans et écrit les textes.
 
-Par défaut, la musique est la première trouvée dans le Media Pool. Elle est posée sur A1 et démarre sur un temps fort. Les plans gardent leur image, sans leur son.
+**Musique** : clique sur ta musique dans le Media Pool, puis sur **🎵 Prendre la musique sélectionnée**. Tu peux aussi la choisir dans la liste. En mode « Automatique », ReelAI prend la musique sélectionnée dans le Media Pool, sinon la première trouvée. Elle est posée sur A1 et démarre sur un temps fort. Les plans gardent leur image, sans leur son.
+
+**Animation des textes**, au choix :
+- **Higgsfield (IA)** : l'image du plan, recadrée en 9:16, est envoyée à Higgsfield, qui l'anime avec le texte intégré dans la scène (léger mouvement de caméra, typo animée). Le clip est posé sur V2, par-dessus le plan, et coupé à sa durée. Les textes sont générés en parallèle. Chaque texte consomme des crédits Higgsfield.
+- **Resolve (gratuit)** : un Text+ animé (fondu, léger grossissement, disparition en fin de plan), placé dans le tiers bas pour ne pas cacher les visages.
+- Si Higgsfield échoue sur un plan, ce plan reçoit automatiquement un Text+ animé.
 
 ### Mode « Clip sélectionné » (vidéo parlée)
 

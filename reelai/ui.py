@@ -16,6 +16,8 @@ SOURCES = [("media_pool", "Tout le Media Pool (montage de plans)"),
            ("selected", "Clip sélectionné (vidéo parlée)")]
 PACES = ["Lent", "Moyen", "Rapide"]
 NO_MUSIC = "— Pas de musique —"
+TEXT_ANIMATIONS = [("higgsfield", "Higgsfield (IA, texte intégré à l'image)"),
+                   ("resolve", "Resolve (Text+ animé, rapide et gratuit)")]
 AUTO_MUSIC = "Automatique (1re musique du Media Pool)"
 LOOK_CHOICES = ["Auto"] + LOOKS
 
@@ -45,7 +47,8 @@ def _run_motion(settings: Settings, motion_runner, text: str, log: Callable) -> 
 
 
 # --------------------------------------------------------------- Resolve UI
-def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None, music_names=()) -> None:
+def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None, music_names=(),
+                    selected_music=None) -> None:
     ui = fusion.UIManager
     disp = bmd.UIDispatcher(ui)
     s = load_settings()
@@ -57,10 +60,13 @@ def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None,
         ui.Label({"Text": "<h3>🎬 Reels automatiques</h3>", "Weight": 0}),
         row("Source", ui.ComboBox({"ID": "Source"})),
         row("Musique", ui.ComboBox({"ID": "Music"})),
+        ui.HGroup({"Weight": 0}, [ui.Label({"Text": "", "MinimumSize": [170, 0], "Weight": 0}),
+                                  ui.Button({"ID": "PickMusic", "Text": "🎵 Prendre la musique sélectionnée dans le Media Pool"})]),
         row("Rythme du montage", ui.ComboBox({"ID": "Pace"})),
         row("Look (étalonnage)", ui.ComboBox({"ID": "Look"})),
-        ui.CheckBox({"ID": "Titles", "Text": "Titre d'accroche + appel à l'action final", "Checked": s.montage_titles,
-                     "Weight": 0}),
+        ui.CheckBox({"ID": "Texts", "Text": "Textes sur les plans (accroche, message, appel à l'action)",
+                     "Checked": s.montage_texts, "Weight": 0}),
+        row("Animation des textes", ui.ComboBox({"ID": "TextAnim"})),
         row("Clé API Anthropic", ui.LineEdit({"ID": "ApiKey", "Text": s.api_key, "EchoMode": "Password",
                                                 "PlaceholderText": "sk-ant-... (ou variable ANTHROPIC_API_KEY)"})),
         row("Nombre de reels", ui.SpinBox({"ID": "Count", "Minimum": 1, "Maximum": 10, "Value": s.reel_count})),
@@ -102,7 +108,7 @@ def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None,
         ui.Button({"ID": "Close", "Text": "Fermer", "Weight": 0}),
     ])
     win = disp.AddWindow(
-        {"ID": "ReelAIWin", "WindowTitle": "ReelAI - Reels automatiques par IA", "Geometry": [80, 60, 1080, 660]},
+        {"ID": "ReelAIWin", "WindowTitle": "ReelAI - Reels automatiques par IA", "Geometry": [80, 50, 1080, 720]},
         ui.HGroup({"Spacing": 16}, [left, right]),
     )
     it = win.GetItems()
@@ -121,6 +127,9 @@ def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None,
         it["Music"].CurrentIndex = 1
     else:
         it["Music"].CurrentIndex = musics.index(s.music_name) if s.music_name in musics else 0
+    anim_codes = [c for c, _ in TEXT_ANIMATIONS]
+    it["TextAnim"].AddItems([label for _, label in TEXT_ANIMATIONS])
+    it["TextAnim"].CurrentIndex = anim_codes.index(s.text_animation) if s.text_animation in anim_codes else 0
     it["Look"].AddItems(LOOK_CHOICES)
     it["Look"].CurrentIndex = LOOK_CHOICES.index(s.montage_look) if s.montage_look in LOOK_CHOICES else 0
     it["Pace"].AddItems(PACES)
@@ -133,6 +142,17 @@ def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None,
     def log(msg):
         print(f"[ReelAI] {msg}")
         it["Status"].Append(msg)
+
+    def on_pick_music(ev):
+        name = selected_music() if selected_music else ""
+        if not name:
+            log("Clique d'abord sur ta musique dans le Media Pool (un clip audio), puis sur ce bouton.")
+            return
+        if name not in musics:
+            musics.append(name)
+            it["Music"].AddItem(name)
+        it["Music"].CurrentIndex = musics.index(name)
+        log(f"🎵 Musique choisie : {name}")
 
     def on_read_sub(ev):
         text = read_subtitle() if read_subtitle else ""
@@ -171,7 +191,9 @@ def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None,
         music = musics[int(it["Music"].CurrentIndex)]
         s.music_name = {AUTO_MUSIC: "", NO_MUSIC: "-"}.get(music, music)
         s.montage_look = LOOK_CHOICES[int(it["Look"].CurrentIndex)]
-        s.montage_titles = bool(it["Titles"].Checked)
+        s.montage_texts = bool(it["Texts"].Checked)
+        s.text_animation = anim_codes[int(it["TextAnim"].CurrentIndex)]
+        s.higgsfield_key = it["HfKey"].Text.strip()
         s.montage_pace = PACES[int(it["Pace"].CurrentIndex)]
         s.reel_count = int(it["Count"].Value)
         s.target_duration = float(it["Target"].Value)
@@ -194,6 +216,7 @@ def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None,
     win.On.Go.Clicked = guarded(on_go)
     win.On.Motion.Clicked = guarded(on_motion)
     win.On.ReadSub.Clicked = guarded(on_read_sub)
+    win.On.PickMusic.Clicked = guarded(on_pick_music)
     win.On.Close.Clicked = lambda ev: disp.ExitLoop()
     win.On.ReelAIWin.Close = lambda ev: disp.ExitLoop()
     win.Show()

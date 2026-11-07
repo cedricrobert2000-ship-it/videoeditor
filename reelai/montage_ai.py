@@ -49,8 +49,12 @@ et `zoom` entre 1.0 et 1.3 (1.1-1.25 sur les détails pour plus d'impact, 1.0 su
 
 Finitions :
 - `look` : étalonnage cohérent pour toute la vidéo, adapté à la marque.
-- `hook_text` : accroche courte affichée au début (3 à 6 mots, percutante, sans hashtag).
-- `end_text` : appel à l'action final (2 à 5 mots, ex. « Réserve ton rendez-vous »).
+- `texts` : textes affichés SUR des plans précis (`shot` = index du plan dans `shots`, à \
+partir de 0). Uniquement si on te le demande, sinon liste vide. Quand on le demande : 2 à 4 \
+textes pour ~30 s — une accroche sur le 1er plan, éventuellement un message fort au \
+milieu, et un appel à l'action sur le dernier plan. 2 à 6 mots chacun, ton de la marque, \
+pas de hashtag ni d'emoji. Choisis des plans d'au moins 2 s avec de l'espace libre (pas \
+sur un visage en gros plan). Aucun texte sur deux plans qui se suivent.
 
 Titre, description, hashtags et textes en français. Si plusieurs reels sont demandés, \
 fais-les vraiment différents (ouverture, angle, plans)."""
@@ -81,11 +85,15 @@ SCHEMA = {
                     "description": {"type": "string"},
                     "hashtags": {"type": "array", "items": {"type": "string"}},
                     "look": {"type": "string", "enum": LOOKS},
-                    "hook_text": {"type": "string"},
-                    "end_text": {"type": "string"},
                     "shots": {"type": "array", "items": SHOT},
+                    "texts": {"type": "array", "items": {
+                        "type": "object",
+                        "properties": {"shot": {"type": "integer"}, "text": {"type": "string"}},
+                        "required": ["shot", "text"],
+                        "additionalProperties": False,
+                    }},
                 },
-                "required": ["title", "description", "hashtags", "look", "hook_text", "end_text", "shots"],
+                "required": ["title", "description", "hashtags", "look", "shots", "texts"],
                 "additionalProperties": False,
             },
         }
@@ -219,6 +227,17 @@ def snap_shots(shots: List[dict], clips: dict, beat: Optional[float], pace: str)
     return out
 
 
+def clean_texts(texts: List[dict], n_shots: int, limit: int = 5) -> List[dict]:
+    """Garde des textes valides : un par plan, plans existants, ordre chronologique."""
+    seen, out = set(), []
+    for t in sorted(texts, key=lambda t: t.get("shot", 0)):
+        i, text = t.get("shot"), str(t.get("text", "")).strip()
+        if isinstance(i, int) and 0 <= i < n_shots and text and i not in seen:
+            seen.add(i)
+            out.append({"shot": i, "text": text[:60]})
+    return out[:limit]
+
+
 # ------------------------------------------------------------- plan IA
 def _build_content(clips: List[dict], music: Optional[dict], settings: Settings,
                    log: Callable[[str], None]) -> List[dict]:
@@ -247,6 +266,8 @@ def _build_content(clips: List[dict], music: Optional[dict], settings: Settings,
         rhythm += " Pas de musique : `beats` = 0."
     if settings.montage_look and settings.montage_look != "Auto":
         rhythm += f" Look imposé : {settings.montage_look}."
+    rhythm += (" Ajoute des textes sur les plans (`texts`)." if settings.montage_texts
+               else " Pas de texte : `texts` = [] sauf si les consignes du créateur en demandent.")
     extra = f"\nConsignes du créateur : {settings.instructions.strip()}" if settings.instructions.strip() else ""
     content: List[dict] = [{"type": "text", "text": (
         f"Monte {settings.reel_count} reel(s) vertical(aux) d'environ {settings.target_duration:.0f} s "
@@ -315,7 +336,8 @@ def plan_montage(clips: List[dict], music_path: Optional[str], settings: Setting
     beat = music["beat"] if music else None
     reels = []
     for r in data.get("reels", [])[: settings.reel_count]:
-        shots = snap_shots(r.get("shots", []), by_id, beat, settings.montage_pace)
+        raw_shots = [sh for sh in r.get("shots", []) if sh.get("clip") in by_id]
+        shots = snap_shots(raw_shots, by_id, beat, settings.montage_pace)
         if shots:
             tags = ["#" + t.strip().lstrip("#").replace(" ", "") for t in r.get("hashtags", []) if t.strip()]
             look = r.get("look", "Naturel")
@@ -323,6 +345,36 @@ def plan_montage(clips: List[dict], music_path: Optional[str], settings: Setting
                 look = settings.montage_look
             reels.append({"title": r.get("title", "Reel"), "description": r.get("description", ""),
                           "hashtags": tags, "shots": shots, "look": look,
-                          "hook_text": r.get("hook_text", "").strip(), "end_text": r.get("end_text", "").strip()})
+                          "texts": clean_texts(r.get("texts", []), len(shots))})
     log(f"Claude propose {len(reels)} montage(s).")
     return {"music": music, "reels": reels}
+
+
+def vertical_frame(path: str, t: float, subject_x: float = 0.5, size=(1080, 1920)) -> bytes:
+    """Image JPEG du plan à l'instant t, recadrée en 9:16 sur le sujet (comme dans la timeline)."""
+    import av
+
+    with av.open(path) as container:
+        stream = container.streams.video[0]
+        container.seek(int(t / stream.time_base), stream=stream, backward=True, any_frame=False)
+        img = None
+        for frame in container.decode(stream):
+            if frame.time is None or frame.time >= t - 0.05:
+                img = frame.to_image()
+                break
+    if img is None:
+        raise RuntimeError("image du plan illisible")
+    w, h = img.size
+    target_ratio = size[0] / size[1]
+    if w / h > target_ratio:  # image plus large que 9:16 : on coupe les côtés autour du sujet
+        crop_w = int(h * target_ratio)
+        left = int(min(max(subject_x * w - crop_w / 2, 0), w - crop_w))
+        img = img.crop((left, 0, left + crop_w, h))
+    else:
+        crop_h = int(w / target_ratio)
+        top = (h - crop_h) // 2
+        img = img.crop((0, top, w, top + crop_h))
+    img = img.convert("RGB").resize(size)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=90)
+    return buf.getvalue()

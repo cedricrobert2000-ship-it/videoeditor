@@ -200,3 +200,70 @@ def create_motion(session, settings: Settings, text: str, log: Callable[[str], N
             log("Titre non ajouté automatiquement : ajoute un Text+ sur V3 avec ton texte.")
     log("✔ Motion ajouté sur la timeline.")
     return MotionResult(brief, res["path"], res["url"])
+
+
+# ------------------------------------------------- textes animés sur les plans
+TEXT_PROMPT = """Animate this exact image into a {seconds}-second vertical 9:16 video: {url}
+
+Keep the SAME scene, people, framing, colors and lighting as the image (image-to-video, \
+no new people, no change of place). Add a subtle, smooth cinematic camera push-in and \
+natural micro-movements.
+
+Integrate this text into the shot as premium kinetic typography: "{text}"
+- spelled EXACTLY like that, with the same accents and capitals; no other text or logo;
+- elegant modern typeface (clean sans-serif or refined serif), {color};
+- smooth reveal animation (letters or words gliding/fading in), then it holds, readable;
+- placed in empty space of the frame, never covering faces; high-end beauty brand look.
+
+Do not ask me questions. When finished, reply with the direct URL of the final MP4."""
+
+
+def animate_text_shot(item: dict, settings: Settings, hf_client, log: Callable[[str], None]) -> str:
+    """Envoie l'image du plan à Higgsfield et renvoie l'URL de la vidéo animée avec le texte."""
+    from .montage_ai import vertical_frame
+
+    image = vertical_frame(item["path"], item["time"], item.get("subject_x", 0.5))
+    url = hf_client.agents.media.upload(image, extension="jpeg", type="image")
+    seconds = max(3, min(10, int(round(item.get("seconds", 5)))))
+    prompt = TEXT_PROMPT.format(seconds=seconds, url=url, text=item["text"],
+                                color=item.get("color") or "white with a soft shadow")
+    session = hf_client.agents.sessions.create()
+    result = hf_client.agents.sessions.run(
+        session.session_id, prompt,
+        on_question=lambda q: "Use your best judgment: keep the scene identical, premium animated text.",
+        timeout=15 * 60,
+    )
+    if result.status != "completed":
+        raise RuntimeError(f"Higgsfield : {result.status} {result.text[:200]}")
+    video = _pick_video_url(result.asset_urls)
+    if not video:
+        raise RuntimeError(f"Higgsfield n'a pas renvoyé de vidéo ({result.text[:200]})")
+    return video
+
+
+def animate_texts(items: List[dict], folder: str, settings: Settings,
+                  log: Callable[[str], None] = print, hf_client=None) -> List[dict]:
+    """Anime plusieurs plans en parallèle. Renvoie [{"path": ...} ou {"error": ...}] dans l'ordre."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    if hf_client is None:
+        from higgsfield_client import SyncClient
+        key = settings.higgsfield_key or os.environ.get("HF_KEY", "")
+        if not key:
+            raise RuntimeError("Clé Higgsfield manquante (colonne de droite de la fenêtre ReelAI).")
+        hf_client = SyncClient(api_key=key)
+
+    log(f"Higgsfield anime {len(items)} texte(s) en parallèle (1 à 5 minutes)...")
+
+    def one(item):
+        try:
+            url = animate_text_shot(item, settings, hf_client, log)
+            path = download(url, folder, item["text"])
+            log(f"✔ Texte animé : « {item['text']} »")
+            return {"path": path}
+        except Exception as exc:
+            log(f"✖ « {item['text']} » non animé par Higgsfield ({str(exc)[:150]})")
+            return {"error": str(exc)}
+
+    with ThreadPoolExecutor(max_workers=min(4, max(1, len(items)))) as pool:
+        return list(pool.map(one, items))

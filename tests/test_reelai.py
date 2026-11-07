@@ -1,3 +1,4 @@
+import io
 import json
 import os
 from types import SimpleNamespace
@@ -368,11 +369,12 @@ def test_media_pool_montage(tmp_path):
 
     items[0].props["Resolution"] = "3840x2160"
     payload = {"reels": [{"title": "Avant / après", "description": "Transformation", "hashtags": ["coiffure"],
-                          "look": "Chaud doré", "hook_text": "Ta nouvelle coupe", "end_text": "Réserve vite",
+                          "look": "Chaud doré", "texts": [{"shot": 5, "text": "hors plan"}],
                           "shots": [{"clip": 2, "start": 0.0, "end": 1.9, "beats": 4, "subject_x": 0.5, "zoom": 1.0},
                                     {"clip": 1, "start": 1.0, "end": 2.1, "beats": 3, "subject_x": 0.8, "zoom": 1.2}]}]}
     client = fake_client(payload)
-    s = Settings(output_dir=str(tmp_path / "out"), music_name="", montage_pace="Moyen", instructions="simple")
+    s = Settings(output_dir=str(tmp_path / "out"), music_name="", montage_pace="Moyen", instructions="simple",
+                 montage_texts=False)
     results = pipeline.run(session, s, log=lambda m: None, backend=LocalBackend(ai_client=client))
 
     content = fake_client.last_kwargs["messages"][0]["content"]
@@ -419,3 +421,100 @@ def test_snap_uses_beats_and_varies_lengths():
         clips, beat=0.5, pace="Rapide")
     assert [round(s["end"] - s["start"], 2) for s in shots] == [4.0, 1.0]
     assert shots[0]["subject_x"] == 1.0 and shots[0]["zoom"] == 1.3  # bornés
+
+
+def test_clean_texts():
+    t = montage_ai.clean_texts([{"shot": 3, "text": " Fin "}, {"shot": 0, "text": "Hook"}, {"shot": 0, "text": "x"},
+                                {"shot": 9, "text": "hors"}, {"shot": 1, "text": ""}], n_shots=4)
+    assert t == [{"shot": 0, "text": "Hook"}, {"shot": 3, "text": "Fin"}]
+
+
+class TextTimeline(MotionTimeline):
+    def __init__(self):
+        super().__init__()
+        self.titles = []
+    def InsertFusionTitleIntoTimeline(self, name):
+        item = FakeTitleItem()
+        self.titles.append((self.tc, item))
+        return item
+
+
+class AnimTool(FakeTool):
+    def __init__(self):
+        super().__init__(); self.keys, self.mods = [], []
+    def AddModifier(self, name, kind): self.mods.append(name); return True
+    def SetInput(self, k, v, t=None):
+        if t is None: self.inputs[k] = v
+        else: self.keys.append((k, t, v))
+
+
+def make_text_session(tmp_path):
+    tl = TextTimeline()
+    mp = FakeMediaPool(FakeItem("x"))
+    mp.current = tl
+    imported = []
+    def import_media(paths):
+        imported.extend(paths)
+        return [SimpleNamespace(GetClipProperty=lambda k: {"Frames": "250", "FPS": "50"}.get(k), path=paths[0])]
+    mp.ImportMedia = import_media
+    session = ResolveSession(SimpleNamespace(GetProjectManager=lambda: SimpleNamespace(
+        GetCurrentProject=lambda: FakeProject(mp))))
+    return session, tl, imported
+
+
+def test_shot_texts_higgsfield_with_fallback(tmp_path):
+    v = tmp_path / "v.mp4"
+    make_video(v, seconds=4)
+    session, tl, imported = make_text_session(tmp_path)
+    shots = [{"clip": 1, "start": 0.0, "end": 2.0, "subject_x": 0.3},
+             {"clip": 1, "start": 2.0, "end": 3.5, "subject_x": 0.5}]
+    positions = {0: (90000, 50), 1: (90050, 38)}
+    texts = [{"shot": 0, "text": "Ta coupe, ta signature"}, {"shot": 1, "text": "Réserve"}]
+    clips = {1: {"path": str(v)}}
+
+    uploads, prompts = [], []
+    def run(sid, prompt, on_question=None, timeout=0):
+        prompts.append(prompt)
+        if "Réserve" in prompt:
+            return SimpleNamespace(status="failed", text="nope", asset_urls=[])
+        return SimpleNamespace(status="completed", text="", asset_urls=["https://cdn/x.mp4"])
+    hf = SimpleNamespace(agents=SimpleNamespace(
+        media=SimpleNamespace(upload=lambda data, extension, type: uploads.append((len(data), extension)) or "https://up/img.jpg"),
+        sessions=SimpleNamespace(create=lambda: SimpleNamespace(session_id="s"), run=run)))
+
+    orig = motion_mod.download
+    motion_mod.download = lambda url, folder, name: f"{folder}/{name}.mp4"
+    try:
+        s = Settings(higgsfield_key="k:s", text_animation="higgsfield")
+        warnings = pipeline.add_shot_texts(session, tl, texts, shots, positions, clips, s, str(tmp_path),
+                                           LocalBackend(hf_client=hf), log=lambda m: None, look="Chaud doré")
+    finally:
+        motion_mod.download = orig
+
+    assert warnings == []
+    assert all(ext == "jpeg" and n > 1000 for n, ext in uploads)
+    assert any('"Ta coupe, ta signature"' in p and "golden" in p and "https://up/img.jpg" in p for p in prompts)
+    # plan 0 : clip Higgsfield posé sur V2 et coupé à la durée du plan (50 frames à 25 -> 100 à 50 i/s)
+    placed = [c for c in tl.clips if c.get("trackIndex") == 2]
+    assert placed[0]["recordFrame"] == 90000 and placed[0]["endFrame"] == 99
+    # plan 1 : Higgsfield a échoué -> Text+ animé par Resolve à 90050
+    assert len(tl.titles) == 1 and tl.titles[0][1].tool.inputs["StyledText"] == "Réserve"
+
+
+def test_resolve_text_animation_keyframes(tmp_path):
+    session, tl, _ = make_text_session(tmp_path)
+    item = FakeTitleItem()
+    item.tool = AnimTool()
+    tl.InsertFusionTitleIntoTimeline = lambda name: item
+    assert session.insert_title(tl, "Hello", 90000, animate=True, duration_frames=50)
+    opacity = [(t, v) for k, t, v in item.tool.keys if k == "Opacity1"]
+    assert opacity[0] == (0, 0.0) and opacity[-1] == (49, 0.0) and max(v for _, v in opacity) == 1.0
+    assert "Size" in item.tool.mods and item.tool.inputs["Center"] == {1: 0.5, 2: 0.3}
+
+
+def test_vertical_frame_is_9_16(tmp_path):
+    from PIL import Image
+    v = tmp_path / "v.mp4"
+    make_video(v)
+    data = montage_ai.vertical_frame(str(v), 1.0, subject_x=0.9)
+    assert Image.open(io.BytesIO(data)).size == (1080, 1920)
