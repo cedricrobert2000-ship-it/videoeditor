@@ -173,8 +173,10 @@ def hex_to_rgb(color: str):
 
 
 def create_motion(session, settings: Settings, text: str, log: Callable[[str], None] = print,
-                  ai_client=None, hf_client=None, downloader=download) -> MotionResult:
+                  backend=None) -> MotionResult:
     """Génère le motion et le pose sur la timeline courante, à la tête de lecture."""
+    from .backend import get_backend
+
     text = text.strip()
     if not text:
         raise RuntimeError("Écris (ou choisis) le texte du motion.")
@@ -182,21 +184,19 @@ def create_motion(session, settings: Settings, text: str, log: Callable[[str], N
     if not timeline:
         raise RuntimeError("Ouvre d'abord la timeline du reel.")
     record_frame = session.playhead_frame(timeline)
-
-    context = session.reel_context(timeline)
-    log("Claude conçoit le motion design...")
-    brief = write_brief(text, context, settings, client=ai_client)
-    log(f"Concept : {brief.concept}")
-
-    url = generate_video(brief, settings, log=log, hf_client=hf_client)
     folder = settings.output_dir or os.path.join(os.path.expanduser("~"), "Movies", "ReelAI")
-    path = downloader(url, folder, text)
-    log(f"Motion téléchargé : {path}")
 
-    session.insert_overlay(timeline, path, record_frame, track=2)
+    backend = backend or get_backend(settings, log)
+    log("Claude conçoit le motion design...")
+    res = backend.run("motion", {"text": text, "context": session.reel_context(timeline), "folder": folder},
+                      settings, log)
+    brief = MotionBrief(**res["brief"])
+    log(f"Motion téléchargé : {res['path']}")
+
+    session.insert_overlay(timeline, res["path"], record_frame, track=2)
     if settings.motion_text_overlay:
         if not session.insert_title(timeline, text, record_frame, track=3,
                                     seconds=settings.motion_duration, rgb=hex_to_rgb(brief.text_color)):
             log("Titre non ajouté automatiquement : ajoute un Text+ sur V3 avec ton texte.")
     log("✔ Motion ajouté sur la timeline.")
-    return MotionResult(brief, path, url)
+    return MotionResult(brief, res["path"], res["url"])

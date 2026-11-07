@@ -44,19 +44,37 @@ Le script installe les dépendances (`anthropic`, `faster-whisper`, `higgsfield-
 
 Ensuite, **redémarre DaVinci Resolve**.
 
-> ⚠️ Lance `install.py` avec le même Python que celui de Resolve. Pour le vérifier, ouvre la console de Resolve (*Workspace › Console*, onglet *Py3*) et tape `import sys; print(sys.executable)`.
+> `install.py` retient le Python avec lequel tu l'as lancé. Si le Python interne de Resolve n'a pas les outils, ReelAI fait automatiquement le travail lourd dans ce Python-là.
 
 ## Utilisation
 
-1. Importe ta vidéo dans le **Media Pool** et **sélectionne-la**.
-2. Ouvre **Workspace › Scripts › ReelAI**.
-3. Colle ta clé API. Elle est enregistrée dans `~/.reelai/config.json` et n'est demandée qu'une fois.
-4. Choisis le nombre de reels, la durée visée, la langue et, si tu veux, des consignes. Par exemple : *« garde les conseils concrets, ton motivant »*.
-5. Clique sur **🎬 Générer les reels**.
+Ouvre **Workspace › Scripts › ReelAI** (en français : *Espace de travail › Scripts*). Il y a deux sources possibles.
 
-Resolve peut sembler figé pendant la transcription, de quelques secondes à quelques minutes selon la longueur de la vidéo. C'est normal. Ensuite, les timelines `Reel 1 - …`, `Reel 2 - …` apparaissent dans le chutier **ReelAI**. Les fichiers `.srt` et les légendes sont rangés dans un dossier `ReelAI/` à côté de ta vidéo.
+### Mode « Tout le Media Pool » (montage de plans) : par défaut
 
-La transcription est gardée en cache. Si tu relances avec d'autres consignes, seule l'étape de l'IA est refaite, en quelques secondes.
+Ce mode convient aux plans tournés sans parole : salon, produit, lifestyle, événement…
+
+1. Importe tous tes plans et une musique dans le Media Pool. Inutile de sélectionner quoi que ce soit.
+2. Dans ReelAI, choisis **Source : Tout le Media Pool**, ta **Musique**, puis le **Rythme** (Lent, Moyen ou Rapide).
+3. Clique sur **🎬 Générer les reels**.
+
+ReelAI extrait des images de chaque clip. **Claude les regarde** et compose un montage de pro : un plan d'ouverture qui accroche, une mini-histoire, des valeurs de plan variées, sans plans flous ou ratés, et le plus fort à la fin. Les coupes sont **calées sur le tempo de la musique**, détecté automatiquement. La musique est posée sur A1 et démarre sur un temps fort. Les plans gardent leur image, sans leur son.
+
+### Mode « Clip sélectionné » (vidéo parlée)
+
+Ce mode convient aux podcasts, interviews, vlogs et formations.
+
+1. Sélectionne **un clip vidéo** dans le Media Pool. Ce doit être un clip, pas une timeline.
+2. Choisis **Source : Clip sélectionné** et clique sur **🎬 Générer les reels**.
+
+Dans ce mode, ReelAI transcrit la vidéo, choisit les meilleurs passages avec un hook au début, coupe les blancs et les « euh », puis ajoute des sous-titres.
+
+### Dans les deux cas
+
+- Les timelines `Reel 1 - …`, `Reel 2 - …` apparaissent dans le chutier **ReelAI**.
+- Une légende `.txt` (titre, description, hashtags) est créée pour chaque reel.
+- Les messages et les erreurs s'affichent dans la zone **Messages** de la fenêtre.
+- Resolve peut sembler figé pendant le traitement. C'est normal.
 
 ## ✨ Motion design avec Higgsfield
 
@@ -124,6 +142,8 @@ reelai/
   subtitles.py         sous-titres style reel (SRT)
   resolve_bridge.py    API de script de DaVinci Resolve
   pipeline.py          orchestration
+  montage_ai.py        montage de plans : analyse d'images par Claude, tempo, calage
   motion.py            motion design (brief Claude + génération Higgsfield)
+  worker.py/backend.py travail lourd exécuté dans le bon Python
   ui.py / launcher.py  fenêtre (UIManager de Resolve ou Tkinter)
 ```

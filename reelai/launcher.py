@@ -24,6 +24,11 @@ def launch(scope: Optional[dict] = None, headless: bool = False) -> None:
         timeline = session.project.GetCurrentTimeline()
         return session.subtitle_at_playhead(timeline) if timeline else ""
 
+    try:
+        music_names = [m["name"] for m in session.list_clips("audio")]
+    except Exception:
+        music_names = []
+
     if headless:
         runner(load_settings(), print)
         return
@@ -44,14 +49,14 @@ def launch(scope: Optional[dict] = None, headless: bool = False) -> None:
     if fusion is not None and bmd is not None and getattr(fusion, "UIManager", None):
         try:
             from .ui import show_resolve_ui
-            show_resolve_ui(fusion, bmd, runner, motion_runner, read_subtitle)
+            show_resolve_ui(fusion, bmd, runner, motion_runner, read_subtitle, music_names)
             return
         except Exception as exc:  # UIManager absent ou incomplet selon la version
             print(f"[ReelAI] Interface Resolve indisponible ({exc}), passage à Tkinter.")
 
     try:
         from .ui import show_tk_ui
-        show_tk_ui(runner, motion_runner, read_subtitle)
+        show_tk_ui(runner, motion_runner, read_subtitle, music_names)
     except Exception as exc:
         print(f"[ReelAI] Pas d'interface graphique ({exc}) : exécution avec les réglages sauvegardés.")
         runner(load_settings(), print)

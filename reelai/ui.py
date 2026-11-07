@@ -11,6 +11,10 @@ from .motion import STYLES
 LANGUAGES = [("fr", "Français"), ("en", "English"), ("es", "Español"), ("de", "Deutsch"),
              ("it", "Italiano"), ("pt", "Português"), ("", "Auto")]
 WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v3"]
+SOURCES = [("media_pool", "Tout le Media Pool (montage de plans)"),
+           ("selected", "Clip sélectionné (vidéo parlée)")]
+PACES = ["Lent", "Moyen", "Rapide"]
+NO_MUSIC = "— Pas de musique —"
 
 
 def _run_safely(settings: Settings, runner: Callable[[Settings, Callable], list], log: Callable) -> str:
@@ -38,7 +42,7 @@ def _run_motion(settings: Settings, motion_runner, text: str, log: Callable) -> 
 
 
 # --------------------------------------------------------------- Resolve UI
-def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None) -> None:
+def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None, music_names=()) -> None:
     ui = fusion.UIManager
     disp = bmd.UIDispatcher(ui)
     s = load_settings()
@@ -47,8 +51,10 @@ def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None)
         return ui.HGroup({"Weight": 0}, [ui.Label({"Text": label, "MinimumSize": [170, 0], "Weight": 0}), widget])
 
     left = ui.VGroup({"Spacing": 5}, [
-        ui.Label({"Text": "<h3>🎬 Reels automatiques</h3>Sélectionne un <b>clip vidéo</b> (pas une timeline) "
-                          "dans le Media Pool, puis clique sur Générer.", "Weight": 0, "WordWrap": True}),
+        ui.Label({"Text": "<h3>🎬 Reels automatiques</h3>", "Weight": 0}),
+        row("Source", ui.ComboBox({"ID": "Source"})),
+        row("Musique", ui.ComboBox({"ID": "Music"})),
+        row("Rythme du montage", ui.ComboBox({"ID": "Pace"})),
         row("Clé API Anthropic", ui.LineEdit({"ID": "ApiKey", "Text": s.api_key, "EchoMode": "Password",
                                                 "PlaceholderText": "sk-ant-... (ou variable ANTHROPIC_API_KEY)"})),
         row("Nombre de reels", ui.SpinBox({"ID": "Count", "Minimum": 1, "Maximum": 10, "Value": s.reel_count})),
@@ -100,6 +106,15 @@ def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None)
     it["Whisper"].AddItems(WHISPER_MODELS)
     it["Whisper"].CurrentIndex = WHISPER_MODELS.index(s.whisper_model) if s.whisper_model in WHISPER_MODELS else 2
 
+    it["Source"].AddItems([label for _, label in SOURCES])
+    src_codes = [c for c, _ in SOURCES]
+    it["Source"].CurrentIndex = src_codes.index(s.source_mode) if s.source_mode in src_codes else 0
+    musics = [NO_MUSIC] + list(music_names)
+    it["Music"].AddItems(musics)
+    it["Music"].CurrentIndex = musics.index(s.music_name) if s.music_name in musics else 0
+    it["Pace"].AddItems(PACES)
+    it["Pace"].CurrentIndex = PACES.index(s.montage_pace) if s.montage_pace in PACES else 1
+
     styles = list(STYLES)
     it["MotionStyle"].AddItems(styles)
     it["MotionStyle"].CurrentIndex = styles.index(s.motion_style) if s.motion_style in styles else 0
@@ -141,6 +156,10 @@ def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None)
 
     def on_go(ev):
         s.api_key = it["ApiKey"].Text.strip()
+        s.source_mode = src_codes[int(it["Source"].CurrentIndex)]
+        music = musics[int(it["Music"].CurrentIndex)]
+        s.music_name = "" if music == NO_MUSIC else music
+        s.montage_pace = PACES[int(it["Pace"].CurrentIndex)]
         s.reel_count = int(it["Count"].Value)
         s.target_duration = float(it["Target"].Value)
         s.min_duration = float(it["Min"].Value)
@@ -170,7 +189,7 @@ def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None)
 
 
 # ---------------------------------------------------------------- Tkinter
-def show_tk_ui(runner, motion_runner=None, read_subtitle=None) -> None:
+def show_tk_ui(runner, motion_runner=None, read_subtitle=None, music_names=()) -> None:
     import tkinter as tk
     from tkinter import ttk
 
@@ -181,6 +200,9 @@ def show_tk_ui(runner, motion_runner=None, read_subtitle=None) -> None:
     frm.grid(sticky="nsew")
 
     v = {
+        "source_mode": tk.StringVar(value=s.source_mode),
+        "music_name": tk.StringVar(value=s.music_name),
+        "montage_pace": tk.StringVar(value=s.montage_pace),
         "api_key": tk.StringVar(value=s.api_key),
         "reel_count": tk.IntVar(value=s.reel_count),
         "target_duration": tk.IntVar(value=int(s.target_duration)),
@@ -194,6 +216,10 @@ def show_tk_ui(runner, motion_runner=None, read_subtitle=None) -> None:
     }
     r = 0
     for label, key, widget in [
+        ("Source (media_pool / selected)", "source_mode",
+         lambda var: ttk.Combobox(frm, values=[c for c, _ in SOURCES], textvariable=var)),
+        ("Musique", "music_name", lambda var: ttk.Combobox(frm, values=[""] + list(music_names), textvariable=var)),
+        ("Rythme", "montage_pace", lambda var: ttk.Combobox(frm, values=PACES, textvariable=var)),
         ("Clé API Anthropic", "api_key", lambda var: ttk.Entry(frm, textvariable=var, show="•", width=40)),
         ("Nombre de reels", "reel_count", lambda var: ttk.Spinbox(frm, from_=1, to=10, textvariable=var)),
         ("Durée visée (s)", "target_duration", lambda var: ttk.Spinbox(frm, from_=10, to=180, textvariable=var)),

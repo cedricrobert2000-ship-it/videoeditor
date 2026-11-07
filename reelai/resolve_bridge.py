@@ -177,6 +177,86 @@ class ResolveSession:
         except Exception:
             pass
 
+    # ------------------------------------------------------------ media pool
+    def _walk(self, folder, skip=("ReelAI",)):
+        for item in folder.GetClipList() or []:
+            yield item
+        for sub in folder.GetSubFolderList() or []:
+            if sub.GetName() not in skip:
+                yield from self._walk(sub, skip)
+
+    def list_clips(self, kind: str = "video", min_seconds: float = 1.0) -> List[dict]:
+        """Clips du Media Pool : kind="video" (plans) ou "audio" (musiques)."""
+        out = []
+        for item in self._walk(self.media_pool.GetRootFolder()):
+            t = _clip_type(item)
+            if kind == "video" and "video" not in t:
+                continue
+            if kind == "audio" and (t != "audio" and not t.startswith("audio")):
+                continue
+            path = item.GetClipProperty("File Path") or ""
+            if not path or not os.path.exists(path):
+                continue
+            fps = _parse_fps(item.GetClipProperty("FPS"))
+            try:
+                frames = int(float(item.GetClipProperty("Frames") or 0))
+            except ValueError:
+                frames = 0
+            duration = frames / fps if frames else _parse_duration(item.GetClipProperty("Duration"), fps)
+            if duration < min_seconds:
+                continue
+            out.append({"id": len(out) + 1, "name": item.GetName(), "path": path,
+                        "fps": fps, "frames": frames or int(duration * fps), "duration": round(duration, 3),
+                        "item": item})
+        return out
+
+    def build_montage_timeline(self, name: str, shots: List[dict], clips_by_id: dict,
+                               music: Optional[dict] = None, music_info: Optional[dict] = None,
+                               vertical: bool = True, width: int = 1080, height: int = 1920, log=print):
+        self.media_pool.SetCurrentFolder(self._bin())
+        timeline = self.media_pool.CreateEmptyTimeline(self._unique_timeline_name(name))
+        if not timeline:
+            raise RuntimeError("Resolve n'a pas pu créer la timeline.")
+        self.project.SetCurrentTimeline(timeline)
+        if vertical:
+            ok = timeline.SetSetting("useCustomSettings", "1")
+            ok = timeline.SetSetting("timelineResolutionWidth", str(width)) and ok
+            ok = timeline.SetSetting("timelineResolutionHeight", str(height)) and ok
+            timeline.SetSetting("timelineInputResMismatchBehavior", "scaleToCrop")
+            if not ok:
+                log("Attention : format vertical non appliqué.")
+
+        tfps = self.timeline_fps(timeline)
+        infos, cum = [], 0.0
+        for s in shots:
+            clip = clips_by_id[s["clip"]]
+            length = s["end"] - s["start"]
+            t_frames = int(round((cum + length) * tfps)) - int(round(cum * tfps))
+            cum += length
+            src_start = int(round(s["start"] * clip["fps"]))
+            src_len = max(1, int(round(t_frames * clip["fps"] / tfps)))
+            src_end = min(src_start + src_len, clip["frames"]) - 1
+            if src_end <= src_start:
+                continue
+            info = {"mediaPoolItem": clip["item"], "startFrame": src_start, "endFrame": src_end}
+            if music:
+                info["mediaType"] = 1  # image seule : la musique remplace le son
+            infos.append(info)
+        if not infos or not self.media_pool.AppendToTimeline(infos):
+            raise RuntimeError("Resolve a refusé d'ajouter les plans sur la timeline.")
+
+        if music:
+            mfps = music["fps"] or tfps
+            offset = (music_info or {}).get("first_beat", 0.0)
+            start = int(round(offset * mfps))
+            end = min(start + int(round(cum * mfps)), music["frames"]) - 1
+            ok = self.media_pool.AppendToTimeline([{
+                "mediaPoolItem": music["item"], "startFrame": start, "endFrame": end,
+                "mediaType": 2, "trackIndex": 1, "recordFrame": timeline.GetStartFrame()}])
+            if not ok:
+                log("Musique non posée automatiquement : glisse-la sur la piste audio.")
+        return timeline
+
     # ------------------------------------------------------------------ motion
     @staticmethod
     def timeline_fps(timeline) -> float:
@@ -301,3 +381,12 @@ def _parse_fps(value) -> float:
     except (ValueError, IndexError):
         fps = 0.0
     return fps if fps > 0 else 25.0
+
+
+def _parse_duration(value, fps: float) -> float:
+    """« 00:00:12:10 » -> secondes."""
+    parts = [int(p) for p in re.split(r"[:;.]", str(value or "")) if p.isdigit()]
+    if len(parts) != 4:
+        return 0.0
+    h, m, s, f = parts
+    return h * 3600 + m * 60 + s + f / max(fps, 1)

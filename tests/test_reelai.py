@@ -11,6 +11,7 @@ from reelai.editor_ai import build_user_prompt, parse_response, plan_reels
 from reelai.models import Segment, Transcript, Word
 from reelai.resolve_bridge import ResolveSession
 from reelai.subtitles import chunk_words, to_srt
+from reelai.backend import LocalBackend, SubprocessBackend
 
 
 def make_transcript():
@@ -155,9 +156,14 @@ def test_full_pipeline(tmp_path):
     resolve = SimpleNamespace(GetProjectManager=lambda: SimpleNamespace(GetCurrentProject=lambda: project))
     session = ResolveSession(resolve)
 
-    s = Settings(render=True, output_dir=str(tmp_path / "out"))
-    results = pipeline.run(session, s, log=lambda m: None, ai_client=fake_client(PAYLOAD),
-                           transcriber=lambda *a, **k: make_transcript())
+    s = Settings(render=True, output_dir=str(tmp_path / "out"), source_mode="selected")
+    import reelai.transcribe as tr
+    orig = tr.transcribe
+    tr.transcribe = lambda *a, **k: make_transcript()
+    try:
+        results = pipeline.run(session, s, log=lambda m: None, backend=LocalBackend(ai_client=fake_client(PAYLOAD)))
+    finally:
+        tr.transcribe = orig
 
     assert len(results) == 1
     tl = mp.timelines[0]
@@ -231,9 +237,13 @@ def test_motion_end_to_end(tmp_path):
         create=lambda: SimpleNamespace(session_id="s1"), run=run)))
 
     s = Settings(output_dir=str(tmp_path), motion_style="Luxe")
-    res = motion_mod.create_motion(session, s, "Mon secret", log=lambda m: None,
-                                   ai_client=fake_client(brief), hf_client=hf,
-                                   downloader=lambda url, folder, name: f"{folder}/m.mp4")
+    orig = motion_mod.download
+    motion_mod.download = lambda url, folder, name: f"{folder}/m.mp4"
+    try:
+        res = motion_mod.create_motion(session, s, "Mon secret", log=lambda m: None,
+                                       backend=LocalBackend(ai_client=fake_client(brief), hf_client=hf))
+    finally:
+        motion_mod.download = orig
 
     assert res.source_url == "https://cdn.x/v.mp4"
     assert "A vault opening" in calls["prompt"] and "9:16" in calls["prompt"]
@@ -245,3 +255,128 @@ def test_motion_end_to_end(tmp_path):
     assert tl.title.tool.inputs["StyledText"] == "Mon secret"
     assert tl.title.tool.inputs["Red1"] == pytest.approx(1.0)
     assert tl.tc == "01:00:02:05"
+
+
+# ------------------------------------------------- montage Media Pool
+import sys
+import numpy as np
+from reelai import montage_ai
+
+
+def make_video(path, seconds=4, fps=25):
+    import av
+    with av.open(str(path), "w") as c:
+        st = c.add_stream("mpeg4", rate=fps)
+        st.width, st.height, st.pix_fmt = 160, 96, "yuv420p"
+        for i in range(seconds * fps):
+            img = np.zeros((96, 160, 3), dtype=np.uint8)
+            img[:, :, 0] = (i * 3) % 255
+            for pkt in st.encode(av.VideoFrame.from_ndarray(img, format="rgb24")):
+                c.mux(pkt)
+        for pkt in st.encode():
+            c.mux(pkt)
+
+
+def make_click_track(path, bpm=120, seconds=12, sr=22050):
+    import av
+    y = np.zeros(int(seconds * sr), dtype=np.float32)
+    period = 60 / bpm
+    first = 0.25
+    t = first
+    while t < seconds - 0.1:
+        i = int(t * sr)
+        y[i:i + 800] += np.sin(np.arange(800) * 2 * np.pi * 1000 / sr) * np.exp(-np.arange(800) / 150)
+        t += period
+    with av.open(str(path), "w") as c:
+        st = c.add_stream("pcm_s16le", rate=sr, layout="mono")
+        pcm = (y * 20000).astype(np.int16).reshape(1, -1)
+        frame = av.AudioFrame.from_ndarray(pcm, format="s16", layout="mono")
+        frame.sample_rate = sr
+        for pkt in st.encode(frame):
+            c.mux(pkt)
+        for pkt in st.encode():
+            c.mux(pkt)
+
+
+def test_extract_frames(tmp_path):
+    v = tmp_path / "a.mp4"
+    make_video(v)
+    frames = montage_ai.extract_frames(str(v), [0.5, 2.0, 3.5])
+    assert all(frames) and len(frames) == 3
+
+
+def test_detect_beats(tmp_path):
+    m = tmp_path / "m.wav"
+    make_click_track(m, bpm=120)
+    info = montage_ai.detect_beats(str(m))
+    assert info["bpm"] == pytest.approx(120, abs=3)
+    assert info["first_beat"] % info["beat"] == pytest.approx(0.25, abs=0.05)
+
+
+def test_snap_shots_on_beats():
+    clips = {1: {"duration": 10.0}, 2: {"duration": 1.2}}
+    shots = montage_ai.snap_shots(
+        [{"clip": 1, "start": 2.0, "end": 4.3}, {"clip": 2, "start": 0.5, "end": 3.0}, {"clip": 9, "start": 0, "end": 1}],
+        clips, beat=0.5, pace="Moyen")
+    assert shots[0] == {"clip": 1, "start": 2.0, "end": 4.5}  # 4.5 temps -> 5 temps (2,5 s)
+    assert shots[1]["end"] - shots[1]["start"] == pytest.approx(1.0)  # clip court : 2 temps
+    assert shots[1]["end"] <= 1.2 and len(shots) == 2
+
+
+class FakeFolder:
+    def __init__(self, name, clips, subs=()):
+        self.name, self.clips, self.subs = name, clips, list(subs)
+    def GetName(self): return self.name
+    def GetClipList(self): return self.clips
+    def GetSubFolderList(self): return self.subs
+
+
+class PoolItem:
+    def __init__(self, name, path, kind, fps="25", frames="100"):
+        self.name = name
+        self.props = {"File Path": path, "Type": kind, "FPS": fps, "Frames": frames}
+    def GetName(self): return self.name
+    def GetClipProperty(self, k): return self.props.get(k)
+
+
+def test_media_pool_montage(tmp_path):
+    v1, v2, music = tmp_path / "v1.mp4", tmp_path / "v2.mp4", tmp_path / "m.wav"
+    make_video(v1)
+    make_video(v2)
+    make_click_track(music)
+    items = [PoolItem("Plan A", str(v1), "Video + Audio", fps="50", frames="200"),
+             PoolItem("Plan B", str(v2), "Video", frames="100"),
+             PoolItem("Timeline 1", "", "Timeline"),
+             PoolItem("Olivia", str(music), "Audio", frames="300")]
+    mp = FakeMediaPool(items[0])
+    mp.GetRootFolder = lambda: FakeFolder("Master", items[:2], [FakeFolder("Sons", items[2:]),
+                                                                   FakeFolder("ReelAI", [PoolItem("old", str(v1), "Video")])])
+    mp.AddSubFolder = lambda root, name: FakeFolder(name, [])
+    project = FakeProject(mp)
+    session = ResolveSession(SimpleNamespace(GetProjectManager=lambda: SimpleNamespace(GetCurrentProject=lambda: project)))
+    FakeTimeline.GetSetting = lambda self, k: "25"
+    FakeTimeline.GetStartFrame = lambda self: 90000
+
+    payload = {"reels": [{"title": "Avant / après", "description": "Transformation", "hashtags": ["coiffure"],
+                          "shots": [{"clip": 2, "start": 0.0, "end": 1.9}, {"clip": 1, "start": 1.0, "end": 2.1}]}]}
+    client = fake_client(payload)
+    s = Settings(output_dir=str(tmp_path / "out"), music_name="Olivia", montage_pace="Moyen", instructions="simple")
+    results = pipeline.run(session, s, log=lambda m: None, backend=LocalBackend(ai_client=client))
+
+    content = fake_client.last_kwargs["messages"][0]["content"]
+    assert sum(1 for b in content if b["type"] == "image") == 6  # 3 images x 2 clips
+    assert "simple" in content[0]["text"] and "BPM" in content[0]["text"]
+    tl = mp.timelines[0]
+    video = [c for c in tl.clips if c.get("mediaType") == 1]
+    audio = [c for c in tl.clips if c.get("mediaType") == 2]
+    # plan B : 2 s (4 temps à 120 BPM) à 25 i/s ; plan A : 1,5 s (3 temps, minimum en rythme Moyen) à 50 i/s
+    assert [(c["startFrame"], c["endFrame"]) for c in video] == [(0, 49), (50, 123)]
+    assert audio[0]["trackIndex"] == 1 and audio[0]["recordFrame"] == 90000
+    assert results[0].plan.hashtags == ["#coiffure"]
+    assert os.path.exists(results[0].caption_path)
+
+
+def test_subprocess_backend_reports_errors():
+    b = SubprocessBackend(sys.executable)
+    with pytest.raises(RuntimeError, match="Tâche inconnue"):
+        b.run("nope", {}, Settings(), log=lambda m: None)

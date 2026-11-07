@@ -34,6 +34,13 @@ def main() -> None:
     target = target_dir / "ReelAI.py"
     target.write_text(source.replace("__REELAI_PATH__", str(HERE)), encoding="utf-8")
 
+    # Mémorise ce Python : ReelAI l'utilisera si celui de Resolve n'a pas les paquets.
+    sys.path.insert(0, str(HERE))
+    from reelai.config import load_settings, save_settings
+    settings = load_settings()
+    settings.python_path = sys.executable
+    save_settings(settings)
+
     print(f"\n✔ Script installé : {target}")
     print("Redémarre DaVinci Resolve puis ouvre : Workspace > Scripts > ReelAI")
     print(f"(Python utilisé : {sys.executable} {sys.version.split()[0]})")

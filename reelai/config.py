@@ -19,6 +19,14 @@ class Settings:
     model: str = "claude-opus-5-5"
     instructions: str = ""  # consignes libres : ton, sujet à privilégier, public...
 
+    # Source : "media_pool" (montage de tous les plans) ou "selected" (vidéo parlée sélectionnée)
+    source_mode: str = "media_pool"
+    music_name: str = ""  # nom d'un clip audio du Media Pool ("" = pas de musique)
+    montage_pace: str = "Moyen"  # Lent, Moyen, Rapide
+
+    # Python où ReelAI est installé (écrit par install.py)
+    python_path: str = ""
+
     # Reels
     reel_count: int = 3
     target_duration: float = 45.0  # secondes
