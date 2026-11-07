@@ -102,12 +102,21 @@ def run_media_pool(session, settings, log, backend) -> List[ReelResult]:
         timeline, positions = session.build_montage_timeline(
             name, r["shots"], by_id, music=music, music_info=plan.get("music"),
             vertical=settings.vertical, width=settings.width, height=settings.height, log=log,
-            look=r.get("look", "Naturel"))
+            look=r.get("look", "Naturel"), music_start=r.get("music_start"))
         res = ReelResult(plan=rp, timeline_name=timeline.GetName())
         texts = [t for t in r.get("texts", []) if t["shot"] in positions]
+        save_plan(timeline.GetName(), {
+            "texts": texts, "shots": r["shots"], "look": r.get("look", ""), "out_dir": out_dir,
+            "positions": {str(k): v for k, v in positions.items()},
+            "paths": {str(c["id"]): c["path"] for c in clips}})
         if texts:
-            res.warnings += add_shot_texts(session, timeline, texts, r["shots"], positions, by_id,
-                                           settings, out_dir, backend, log, look=r.get("look", ""))
+            listing = " · ".join(f"« {t['text']} »" for t in texts)
+            if settings.montage_texts and settings.text_animation == "reelai":
+                res.warnings += add_shot_texts(session, timeline, texts, r["shots"], positions,
+                                               {c["id"]: c["path"] for c in clips}, settings, out_dir,
+                                               backend, log, look=r.get("look", ""), mode="reelai")
+            else:
+                log(f"Textes proposés : {listing}. Ajoute-les quand tu veux avec « ✍️ Ajouter les textes ».")
         session.add_marker(timeline, rp.title, "\n".join([rp.description, " ".join(rp.hashtags)]))
         res.caption_path = _write_caption(out_dir, timeline.GetName(), rp)
         if settings.render:
@@ -117,34 +126,59 @@ def run_media_pool(session, settings, log, backend) -> List[ReelResult]:
     return _finish(session, settings, results, jobs, out_dir, log)
 
 
+# ---------------------------------------------------------------- textes
+def _plan_path(timeline_name: str) -> str:
+    from .config import CONFIG_DIR
+    return os.path.join(str(CONFIG_DIR), "plans", _safe_name(timeline_name) + ".json")
+
+
+def save_plan(timeline_name: str, data: dict) -> None:
+    import json
+    path = _plan_path(timeline_name)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False)
+
+
+def load_plan(timeline_name: str) -> Optional[dict]:
+    import json
+    try:
+        with open(_plan_path(timeline_name), encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
 TEXT_COLORS = {"Chaud doré": "warm ivory white with a subtle golden glow",
                "Noir & blanc": "pure white", "Film doux": "soft cream white"}
 
 
-def add_shot_texts(session, timeline, texts, shots, positions, clips_by_id, settings, out_dir,
-                   backend, log, look: str = "") -> List[str]:
-    """Ajoute les textes sur les plans choisis : animés par Higgsfield, sinon Text+ animé."""
+def add_shot_texts(session, timeline, texts, shots, positions, clip_paths, settings, out_dir,
+                   backend, log, look: str = "", mode: str = "reelai") -> List[str]:
+    """Pose les textes sur les plans choisis.
+    mode "reelai" : typo animée rendue par ReelAI (rapide) sur V3.
+    mode "higgsfield" : le plan est réanimé par Higgsfield avec le texte intégré (V2) ;
+    en cas d'échec, ce plan reçoit le texte ReelAI."""
     warnings: List[str] = []
     fps = session.timeline_fps(timeline)
     pending = list(texts)
 
-    if settings.text_animation == "higgsfield":
+    if mode == "higgsfield":
         if not (settings.higgsfield_key or os.environ.get("HF_KEY")):
-            log("Pas de clé Higgsfield : textes animés par Resolve à la place.")
+            log("Pas de clé Higgsfield : textes animés par ReelAI à la place.")
         else:
             items = []
             for t in texts:
                 shot = shots[t["shot"]]
                 _, frames = positions[t["shot"]]
-                items.append({"path": clips_by_id[shot["clip"]]["path"],
-                              "time": (shot["start"] + shot["end"]) / 2,
+                items.append({"path": clip_paths[shot["clip"]], "time": (shot["start"] + shot["end"]) / 2,
                               "subject_x": shot.get("subject_x", 0.5), "text": t["text"],
                               "seconds": frames / fps,
                               "color": TEXT_COLORS.get(look, "white with a soft shadow")})
             try:
                 outcomes = backend.run("animate_texts", {"items": items, "folder": out_dir}, settings, log)["results"]
             except Exception as exc:
-                log(f"Higgsfield indisponible ({exc}) : textes animés par Resolve à la place.")
+                log(f"Higgsfield indisponible ({exc}) : textes animés par ReelAI à la place.")
                 outcomes = [{"error": str(exc)}] * len(texts)
             pending = []
             for t, outcome in zip(texts, outcomes):
@@ -154,16 +188,51 @@ def add_shot_texts(session, timeline, texts, shots, positions, clips_by_id, sett
                         session.insert_overlay(timeline, outcome["path"], record, track=2, max_frames=frames)
                         continue
                     except Exception as exc:
-                        log(f"Clip animé non posé ({exc})")
+                        log(f"Clip Higgsfield non posé ({exc})")
                 pending.append(t)
 
-    for t in pending:  # Text+ animé par Resolve
-        record, frames = positions[t["shot"]]
-        if not session.insert_title(timeline, t["text"], record, track=3, animate=True, duration_frames=frames):
-            warnings.append(f"Texte « {t['text']} » non ajouté : ajoute un Text+ à la main.")
+    if pending:
+        log(f"Rendu de {len(pending)} texte(s) animé(s)...")
+        items = [{"text": t["text"], "frames": positions[t["shot"]][1], "fps": fps,
+                  "position": t.get("position", "bottom"), "uppercase": settings.subtitle_uppercase,
+                  "name": f"{_safe_name(timeline.GetName())[:20]} - "} for t in pending]
+        try:
+            outcomes = backend.run("render_texts", {"items": items, "folder": out_dir}, settings, log)["results"]
+        except Exception as exc:
+            outcomes = [{"error": str(exc)}] * len(pending)
+        for t, outcome in zip(pending, outcomes):
+            record, frames = positions[t["shot"]]
+            try:
+                if not outcome.get("path"):
+                    raise RuntimeError(outcome.get("error", "rendu impossible"))
+                session.insert_overlay(timeline, outcome["path"], record, track=3, max_frames=frames)
+            except Exception as exc:
+                warnings.append(f"Texte « {t['text']} » non ajouté ({str(exc)[:120]}).")
+                log(warnings[-1])
     if texts:
         log(f"{len(texts) - len(warnings)} texte(s) ajouté(s) sur les plans.")
     return warnings
+
+
+def add_texts_to_current_timeline(session, settings, log: Callable[[str], None] = print,
+                                  backend=None, mode: Optional[str] = None) -> List[str]:
+    """Étape « après le montage » : ajoute les textes proposés sur la timeline ouverte."""
+    timeline = session.project.GetCurrentTimeline()
+    if not timeline:
+        raise RuntimeError("Ouvre d'abord la timeline d'un reel créé par ReelAI.")
+    plan = load_plan(timeline.GetName())
+    if not plan:
+        raise RuntimeError(f"Pas de plan ReelAI pour « {timeline.GetName()} » : relance un montage.")
+    if not plan["texts"]:
+        raise RuntimeError("L'IA n'a pas proposé de texte pour ce reel : coche « Textes sur les plans » "
+                           "et relance le montage, ou utilise le Motion design.")
+    backend = backend or get_backend(settings, log)
+    positions = {int(k): tuple(v) for k, v in plan["positions"].items()}
+    paths = {int(k): v for k, v in plan["paths"].items()}
+    log(f"Textes : " + " · ".join(f"« {t['text']} »" for t in plan["texts"]))
+    return add_shot_texts(session, timeline, plan["texts"], plan["shots"], positions, paths, settings,
+                          plan["out_dir"], backend, log, look=plan.get("look", ""),
+                          mode=mode or settings.text_animation)
 
 
 # ------------------------------------------------------- vidéo parlée

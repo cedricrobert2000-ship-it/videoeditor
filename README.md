@@ -58,19 +58,20 @@ Ce mode convient aux plans tournés sans parole : salon, produit, lifestyle, év
 2. Dans ReelAI, choisis **Source : Tout le Media Pool**, ta **Musique**, puis le **Rythme** (Lent, Moyen ou Rapide).
 3. Clique sur **🎬 Générer les reels**.
 
-ReelAI extrait des images de chaque clip. **Claude les regarde** et compose un montage de pro :
-- un plan d'ouverture qui accroche, une mini-histoire et le plus fort à la fin, sans plans flous ou ratés ;
-- des **durées de plans variées**, comptées en temps de musique (2, 4 ou 8 temps), avec des coupes **calées sur le tempo** détecté automatiquement ;
-- un **recadrage 9:16 intelligent** : chaque plan est cadré sur le sujet et non au centre, avec un léger zoom sur les détails ;
-- un **look** d'étalonnage cohérent sur tous les plans (Chaud doré, Film doux, Lumineux clean, Noir & blanc, ou choisi par l'IA) ;
-- des **textes sur les plans** (accroche, message, appel à l'action) quand la case est cochée ou que tu le demandes dans les consignes. Claude choisit les plans et écrit les textes.
+ReelAI fabrique pour chaque clip une **planche de 6 vignettes horodatées** et signale les images floues. Le décodage est rapide, se fait en parallèle et passe par un cache : une relance est quasi instantanée. **Claude regarde les planches** et compose un montage de pro :
+- il choisit **le meilleur passage de chaque clip** autour des vignettes nettes et belles ;
+- il ouvre sur un plan qui accroche, raconte une mini-histoire et garde le plus fort pour la fin ;
+- les durées de plans varient et se comptent en temps de musique, avec des coupes **calées sur le tempo** ;
+- il choisit **le bon passage de la musique** : ReelAI mesure l'énergie mesure par mesure et propose les meilleurs départs (montée, partie la plus énergique), Claude prend celui qui sert le montage, et la durée totale est arrondie à des mesures entières ;
+- le cadrage 9:16 suit le sujet de chaque plan, avec un léger zoom sur les détails ;
+- un **look** d'étalonnage est appliqué à tous les plans.
 
-**Musique** : clique sur ta musique dans le Media Pool, puis sur **🎵 Prendre la musique sélectionnée**. Tu peux aussi la choisir dans la liste. En mode « Automatique », ReelAI prend la musique sélectionnée dans le Media Pool, sinon la première trouvée. Elle est posée sur A1 et démarre sur un temps fort. Les plans gardent leur image, sans leur son.
+**Musique** : clique sur ta musique dans le Media Pool, puis sur **🎵 Prendre la musique sélectionnée**. Tu peux aussi la choisir dans la liste.
 
-**Animation des textes**, au choix :
-- **Higgsfield (IA)** : l'image du plan, recadrée en 9:16, est envoyée à Higgsfield, qui l'anime avec le texte intégré dans la scène (léger mouvement de caméra, typo animée). Le clip est posé sur V2, par-dessus le plan, et coupé à sa durée. Les textes sont générés en parallèle. Chaque texte consomme des crédits Higgsfield.
-- **Resolve (gratuit)** : un Text+ animé (fondu, léger grossissement, disparition en fin de plan), placé dans le tiers bas pour ne pas cacher les visages.
-- Si Higgsfield échoue sur un plan, ce plan reçoit automatiquement un Text+ animé.
+**Textes sur les plans** : Claude propose 2 à 4 textes (accroche, message, appel à l'action), chacun sur un plan précis et à une position qui ne cache pas le sujet.
+- **ReelAI (par défaut)** : les textes sont rendus en vidéo transparente (ProRes 4444) à la durée exacte du plan, avec une typo grasse, une apparition mot par mot, une ombre douce et un fondu de sortie. Ils sont posés sur V3 dès le montage. C'est rapide et gratuit.
+- **Higgsfield** : il intervient **après** le montage. Ouvre la timeline du reel et clique sur **✨ Animer les textes avec Higgsfield** : chaque plan concerné est réanimé par l'IA avec le texte intégré à la scène, puis posé sur V2. Si un plan échoue, il reçoit le texte ReelAI.
+- Le bouton **✍️ Ajouter les textes (ReelAI)** ajoute après coup les textes proposés, si la case n'était pas cochée au montage.
 
 ### Mode « Clip sélectionné » (vidéo parlée)
 

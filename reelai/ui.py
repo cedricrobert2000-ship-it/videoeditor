@@ -16,8 +16,8 @@ SOURCES = [("media_pool", "Tout le Media Pool (montage de plans)"),
            ("selected", "Clip sélectionné (vidéo parlée)")]
 PACES = ["Lent", "Moyen", "Rapide"]
 NO_MUSIC = "— Pas de musique —"
-TEXT_ANIMATIONS = [("higgsfield", "Higgsfield (IA, texte intégré à l'image)"),
-                   ("resolve", "Resolve (Text+ animé, rapide et gratuit)")]
+TEXT_ANIMATIONS = [("reelai", "ReelAI : typo animée (rapide, gratuit, dès le montage)"),
+                   ("higgsfield", "Higgsfield : plan réanimé par l'IA (après le montage)")]
 AUTO_MUSIC = "Automatique (1re musique du Media Pool)"
 LOOK_CHOICES = ["Auto"] + LOOKS
 
@@ -48,7 +48,7 @@ def _run_motion(settings: Settings, motion_runner, text: str, log: Callable) -> 
 
 # --------------------------------------------------------------- Resolve UI
 def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None, music_names=(),
-                    selected_music=None) -> None:
+                    selected_music=None, texts_runner=None) -> None:
     ui = fusion.UIManager
     disp = bmd.UIDispatcher(ui)
     s = load_settings()
@@ -91,6 +91,11 @@ def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None,
         ui.Button({"ID": "Go", "Text": "🎬 Générer les reels", "Weight": 0, "MinimumSize": [0, 34]}),
     ])
     right = ui.VGroup({"Spacing": 5}, [
+        ui.Label({"Text": "<h3>✍️ Textes après le montage</h3>Ouvre la timeline d'un reel puis ajoute les "
+                          "textes proposés par l'IA.", "Weight": 0, "WordWrap": True}),
+        ui.HGroup({"Weight": 0}, [
+            ui.Button({"ID": "AddTexts", "Text": "✍️ Ajouter les textes (ReelAI)"}),
+            ui.Button({"ID": "AddTextsHF", "Text": "✨ Animer les textes avec Higgsfield"})]),
         ui.Label({"Text": "<h3>✨ Motion design (Higgsfield)</h3>Ouvre la timeline d'un reel, place la tête de "
                           "lecture, choisis le texte puis crée le motion.", "Weight": 0, "WordWrap": True}),
         row("Clé Higgsfield", ui.LineEdit({"ID": "HfKey", "Text": s.higgsfield_key, "EchoMode": "Password",
@@ -153,6 +158,18 @@ def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None,
             it["Music"].AddItem(name)
         it["Music"].CurrentIndex = musics.index(name)
         log(f"🎵 Musique choisie : {name}")
+
+    def on_add_texts(mode):
+        def handler(ev):
+            if texts_runner is None:
+                return
+            s.api_key = it["ApiKey"].Text.strip()
+            s.higgsfield_key = it["HfKey"].Text.strip()
+            save_settings(s)
+            it["Status"].PlainText = "Ajout des textes..." + (" (Higgsfield : 1 à 5 minutes)" if mode == "higgsfield" else "")
+            warnings = texts_runner(s, mode, log)
+            log("✔ Textes ajoutés." if not warnings else "Terminé avec des avertissements (voir ci-dessus).")
+        return handler
 
     def on_read_sub(ev):
         text = read_subtitle() if read_subtitle else ""
@@ -217,6 +234,8 @@ def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None,
     win.On.Motion.Clicked = guarded(on_motion)
     win.On.ReadSub.Clicked = guarded(on_read_sub)
     win.On.PickMusic.Clicked = guarded(on_pick_music)
+    win.On.AddTexts.Clicked = guarded(on_add_texts("reelai"))
+    win.On.AddTextsHF.Clicked = guarded(on_add_texts("higgsfield"))
     win.On.Close.Clicked = lambda ev: disp.ExitLoop()
     win.On.ReelAIWin.Close = lambda ev: disp.ExitLoop()
     win.Show()

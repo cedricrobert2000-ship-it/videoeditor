@@ -20,6 +20,9 @@ def launch(scope: Optional[dict] = None, headless: bool = False) -> None:
     def motion_runner(settings, text, log):
         return motion.create_motion(session, settings, text, log=log)
 
+    def texts_runner(settings, mode, log):
+        return pipeline.add_texts_to_current_timeline(session, settings, log=log, mode=mode)
+
     def read_subtitle():
         timeline = session.project.GetCurrentTimeline()
         return session.subtitle_at_playhead(timeline) if timeline else ""
@@ -50,7 +53,7 @@ def launch(scope: Optional[dict] = None, headless: bool = False) -> None:
         try:
             from .ui import show_resolve_ui
             show_resolve_ui(fusion, bmd, runner, motion_runner, read_subtitle, music_names,
-                            selected_music=session.selected_audio_name)
+                            selected_music=session.selected_audio_name, texts_runner=texts_runner)
             return
         except Exception as exc:  # UIManager absent ou incomplet selon la version
             print(f"[ReelAI] Interface Resolve indisponible ({exc}), passage à Tkinter.")

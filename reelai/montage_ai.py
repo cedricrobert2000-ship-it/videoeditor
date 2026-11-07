@@ -22,8 +22,13 @@ LOOKS = ["Naturel", "Chaud doré", "Film doux", "Lumineux clean", "Noir & blanc"
 
 SYSTEM_PROMPT = """Tu es un monteur vidéo senior qui fait des reels Instagram/TikTok \
 haut de gamme pour des marques. On te montre des images extraites de chaque clip \
-disponible (avec l'instant exact de chaque image dans le clip). Tu construis le montage \
-final, vertical 9:16, comme le ferait un studio pro.
+disponible : une PLANCHE de vignettes par clip, avec l'instant (en secondes) écrit sur \
+chaque vignette ; « flou » signale une vignette floue. Tu construis le montage final, \
+vertical 9:16, comme le ferait un studio pro.
+
+Choix des passages : pour chaque plan, place start/end autour des MEILLEURES vignettes du \
+clip (geste net, belle lumière, sujet bien visible, mouvement intéressant), jamais sur une \
+vignette « flou ». Un même clip peut fournir deux plans différents s'il est riche.
 
 Narration :
 - Les 2 premières secondes accrochent : ouvre sur un plan intrigant ou très beau.
@@ -47,10 +52,15 @@ Cadrage 9:16 : le clip sera recadré en vertical. Pour chaque plan, `subject_x` 
 horizontale du sujet principal dans l'image (0 = bord gauche, 0.5 = centre, 1 = bord droit), \
 et `zoom` entre 1.0 et 1.3 (1.1-1.25 sur les détails pour plus d'impact, 1.0 sur les plans larges).
 
+Musique : si des départs possibles sont proposés (A, B, C...), choisis dans `music_choice` \
+l'index (0 = A) du passage qui sert le mieux le montage (souvent le passage le plus \
+énergique ou une montée qui démarre avec l'accroche). -1 s'il n'y a pas de musique.
+
 Finitions :
 - `look` : étalonnage cohérent pour toute la vidéo, adapté à la marque.
 - `texts` : textes affichés SUR des plans précis (`shot` = index du plan dans `shots`, à \
-partir de 0). Uniquement si on te le demande, sinon liste vide. Quand on le demande : 2 à 4 \
+partir de 0), avec `position` (top, middle ou bottom) choisie pour ne pas couvrir le sujet. \
+Uniquement si on te le demande, sinon liste vide. Quand on le demande : 2 à 4 \
 textes pour ~30 s — une accroche sur le 1er plan, éventuellement un message fort au \
 milieu, et un appel à l'action sur le dernier plan. 2 à 6 mots chacun, ton de la marque, \
 pas de hashtag ni d'emoji. Choisis des plans d'au moins 2 s avec de l'espace libre (pas \
@@ -85,15 +95,17 @@ SCHEMA = {
                     "description": {"type": "string"},
                     "hashtags": {"type": "array", "items": {"type": "string"}},
                     "look": {"type": "string", "enum": LOOKS},
+                    "music_choice": {"type": "integer"},
                     "shots": {"type": "array", "items": SHOT},
                     "texts": {"type": "array", "items": {
                         "type": "object",
-                        "properties": {"shot": {"type": "integer"}, "text": {"type": "string"}},
-                        "required": ["shot", "text"],
+                        "properties": {"shot": {"type": "integer"}, "text": {"type": "string"},
+                                       "position": {"type": "string", "enum": ["top", "middle", "bottom"]}},
+                        "required": ["shot", "text", "position"],
                         "additionalProperties": False,
                     }},
                 },
-                "required": ["title", "description", "hashtags", "look", "shots", "texts"],
+                "required": ["title", "description", "hashtags", "look", "music_choice", "shots", "texts"],
                 "additionalProperties": False,
             },
         }
@@ -130,6 +142,77 @@ def extract_frames(path: str, times: List[float], max_side: int = 480) -> List[O
             img.convert("RGB").save(buf, format="JPEG", quality=72)
             out.append(base64.b64encode(buf.getvalue()).decode("ascii"))
     return out
+
+
+def contact_sheet(path: str, duration: float, n: int = 6, cell=(320, 180)) -> dict:
+    """Planche de n vignettes horodatées (décodage des images clés uniquement : rapide).
+    Mise en cache sur disque."""
+    import hashlib
+    import os
+
+    from .config import CACHE_DIR
+
+    st = os.stat(path)
+    key = hashlib.sha1(f"{path}|{st.st_size}|{st.st_mtime}|{n}|{cell}".encode()).hexdigest()
+    cache = CACHE_DIR / "sheets" / (key + ".json")
+    if cache.exists():
+        try:
+            return json.loads(cache.read_text())
+        except ValueError:
+            pass
+
+    import av
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    thumbs = []
+    with av.open(path) as container:
+        stream = container.streams.video[0]
+        stream.codec_context.skip_frame = "NONKEY"
+        stream.thread_type = "AUTO"
+        last_time = None
+        for i in range(n):
+            t = duration * (i + 0.5) / n
+            try:
+                container.seek(int(t / stream.time_base), stream=stream, backward=True, any_frame=False)
+                frame = next(container.decode(stream))
+            except Exception:
+                continue
+            ft = float(frame.time) if frame.time is not None else t
+            if last_time is not None and abs(ft - last_time) < 0.2:
+                continue  # même image clé que la précédente
+            last_time = ft
+            img = frame.to_image()
+            img.thumbnail(cell)
+            gray = np.asarray(img.convert("L"), dtype=np.float32)
+            lap = gray[1:-1, 1:-1] * 4 - gray[:-2, 1:-1] - gray[2:, 1:-1] - gray[1:-1, :-2] - gray[1:-1, 2:]
+            thumbs.append((ft, img, float(lap.var())))
+    if not thumbs:
+        raise RuntimeError("aucune image lisible")
+
+    sharp_ref = max(v for _, _, v in thumbs)
+    cols = 3
+    rows = (len(thumbs) + cols - 1) // cols
+    sheet = Image.new("RGB", (cell[0] * cols, cell[1] * rows), (20, 20, 20))
+    draw = ImageDraw.Draw(sheet)
+    info = []
+    for k, (ft, img, sharp) in enumerate(thumbs):
+        x, y = (k % cols) * cell[0], (k // cols) * cell[1]
+        sheet.paste(img, (x + (cell[0] - img.width) // 2, y + (cell[1] - img.height) // 2))
+        blurry = sharp < 0.35 * sharp_ref
+        label = f"{ft:.1f}s" + (" flou" if blurry else "")
+        draw.rectangle([x, y, x + 9 * len(label) + 10, y + 22], fill=(0, 0, 0))
+        draw.text((x + 5, y + 5), label, fill=(255, 80, 80) if blurry else (255, 255, 255))
+        info.append({"t": round(ft, 2), "blurry": blurry})
+    buf = io.BytesIO()
+    sheet.save(buf, format="JPEG", quality=72)
+    result = {"image": base64.b64encode(buf.getvalue()).decode("ascii"), "frames": info}
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps(result))
+    except OSError:
+        pass
+    return result
 
 
 # ------------------------------------------------------------- musique
@@ -189,8 +272,68 @@ def detect_beats(path: str, max_seconds: float = 240.0) -> dict:
     # trame d'attaque -> instant (fenêtre de 1024 échantillons, différence entre trames)
     first = ((o + 1) * hop + 512) / sr
     first = first % period
+    # Énergie par mesure (4 temps), normalisée 0-1, pour choisir le bon passage.
+    bar = 4 * period
+    n_bars = int((y.size / sr - first) // bar)
+    energies = []
+    for i in range(n_bars):
+        a = int((first + i * bar) * sr)
+        b = int((first + (i + 1) * bar) * sr)
+        energies.append(float(np.sqrt(np.mean(y[a:b] ** 2))) if b > a else 0.0)
+    top = max(energies) if energies and max(energies) > 0 else 1.0
     return {"bpm": round(60.0 / period, 1), "beat": period, "first_beat": first,
-            "duration": y.size / sr}
+            "duration": y.size / sr, "bar": bar, "bars": [round(e / top, 3) for e in energies]}
+
+
+def music_candidates(music: dict, target: float, count: int = 5) -> List[dict]:
+    """Meilleurs départs (sur une mesure) pour un extrait de la durée visée."""
+    bars, bar = music.get("bars") or [], music.get("bar") or 0
+    if not bars or not bar:
+        return [{"start": music.get("first_beat", 0.0), "label": "début du morceau"}]
+    length = max(1, int(round(target / bar)))
+    scored = []
+    for i in range(0, max(1, len(bars) - length + 1)):
+        window = bars[i:i + length]
+        mean = sum(window) / len(window)
+        jump = bars[i] - bars[i - 1] if i > 0 else 0.0
+        scored.append((mean + 0.6 * max(0.0, jump), i, mean, jump))
+    scored.sort(reverse=True)
+    chosen = []
+    for score, i, mean, jump in scored:
+        if all(abs(i - c[1]) >= 4 for c in chosen):
+            chosen.append((score, i, mean, jump))
+        if len(chosen) >= count:
+            break
+    if not any(c[1] == 0 for c in chosen):
+        chosen.append((0, 0, sum(bars[:length]) / max(1, len(bars[:length])), 0))
+    out = []
+    for _, i, mean, jump in sorted(chosen, key=lambda c: c[1]):
+        level = "très énergique" if mean > 0.75 else "énergique" if mean > 0.55 else "calme"
+        label = f"mesure {i + 1}, {level}" + (", début de section (montée/drop)" if jump > 0.2 else "")
+        if i == 0:
+            label += ", début du morceau"
+        out.append({"start": round(music["first_beat"] + i * bar, 3), "bar": i, "label": label})
+    return out
+
+
+def fit_to_bars(shots: List[dict], clips: dict, beat: float) -> List[dict]:
+    """Allonge (ou raccourcit) le dernier plan pour finir sur une mesure entière."""
+    if not shots or not beat:
+        return shots
+    beats = [round((s["end"] - s["start"]) / beat) for s in shots]
+    extra = (-sum(beats)) % 4
+    if extra == 0:
+        return shots
+    last = dict(shots[-1])
+    dur = clips[last["clip"]]["duration"]
+    longer = last["end"] + extra * beat
+    if longer <= dur + 1e-6:
+        last["end"] = round(longer, 3)
+    elif last["start"] - extra * beat >= 0:
+        last["start"] = round(last["start"] - extra * beat, 3)
+    elif beats[-1] - (4 - extra) >= 1:
+        last["end"] = round(last["end"] - (4 - extra) * beat, 3)
+    return shots[:-1] + [last]
 
 
 def _clamp(v, lo, hi, default):
@@ -234,13 +377,16 @@ def clean_texts(texts: List[dict], n_shots: int, limit: int = 5) -> List[dict]:
         i, text = t.get("shot"), str(t.get("text", "")).strip()
         if isinstance(i, int) and 0 <= i < n_shots and text and i not in seen:
             seen.add(i)
-            out.append({"shot": i, "text": text[:60]})
+            pos = t.get("position") if t.get("position") in ("top", "middle", "bottom") else "bottom"
+            out.append({"shot": i, "text": text[:60], "position": pos})
     return out[:limit]
 
 
 # ------------------------------------------------------------- plan IA
-def _build_content(clips: List[dict], music: Optional[dict], settings: Settings,
-                   log: Callable[[str], None]) -> List[dict]:
+def _build_content(clips: List[dict], music: Optional[dict], candidates: List[dict],
+                   settings: Settings, log: Callable[[str], None]) -> List[dict]:
+    from concurrent.futures import ThreadPoolExecutor
+
     try:  # échoue tout de suite (et une seule fois) si les outils image sont inutilisables
         import av  # noqa: F401
         from PIL import Image  # noqa: F401
@@ -248,50 +394,53 @@ def _build_content(clips: List[dict], music: Optional[dict], settings: Settings,
         raise RuntimeError(f"Outils de lecture vidéo indisponibles : {exc}") from exc
 
     clips = sorted(clips, key=lambda c: -c["duration"])[:MAX_IMAGES]
-    # 1 image par clip, puis les images restantes vont aux clips les plus longs (max 3).
-    counts = {c["id"]: 1 for c in clips}
-    spare = MAX_IMAGES - len(clips)
-    while spare > 0 and any(v < 3 for v in counts.values()):
-        for c in clips:
-            if spare > 0 and counts[c["id"]] < 3:
-                counts[c["id"]] += 1
-                spare -= 1
     target, _ = PACE.get(settings.montage_pace, PACE["Moyen"])
 
     rhythm = f"Rythme demandé : {settings.montage_pace.lower()} (plans d'environ {target:.1f} s)."
     if music:
         rhythm += (f" Musique : {music['bpm']} BPM, un temps = {music['beat']:.2f} s ; donne la "
-                   f"durée de chaque plan en `beats`, les coupes seront calées sur les temps.")
+                   f"durée de chaque plan en `beats`, les coupes seront calées sur les temps.\n"
+                   "Départs possibles dans la musique (`music_choice`) :\n"
+                   + "\n".join(f"  {i} = {chr(65 + i)} : {c['start']:.1f} s ({c['label']})"
+                                for i, c in enumerate(candidates)))
     else:
-        rhythm += " Pas de musique : `beats` = 0."
+        rhythm += " Pas de musique : `beats` = 0, `music_choice` = -1."
     if settings.montage_look and settings.montage_look != "Auto":
-        rhythm += f" Look imposé : {settings.montage_look}."
-    rhythm += (" Ajoute des textes sur les plans (`texts`)." if settings.montage_texts
-               else " Pas de texte : `texts` = [] sauf si les consignes du créateur en demandent.")
+        rhythm += f"\nLook imposé : {settings.montage_look}."
+    rhythm += ("\nAjoute des textes sur les plans (`texts`)." if settings.montage_texts
+               else "\nPas de texte : `texts` = [] sauf si les consignes du créateur en demandent.")
     extra = f"\nConsignes du créateur : {settings.instructions.strip()}" if settings.instructions.strip() else ""
     content: List[dict] = [{"type": "text", "text": (
         f"Monte {settings.reel_count} reel(s) vertical(aux) d'environ {settings.target_duration:.0f} s "
         f"(entre {settings.min_duration:.0f} et {settings.max_duration:.0f} s). {rhythm}{extra}\n\n"
         f"Voici les {len(clips)} clips disponibles :")}]
 
-    for n, clip in enumerate(clips, 1):
-        d = clip["duration"]
-        k = counts[clip["id"]]
-        times = [round(d * (i + 0.5) / k, 2) for i in range(k)]
-        log(f"Analyse des images {n}/{len(clips)} : {clip['name']}")
+    log(f"Analyse de {len(clips)} clips (planches de vignettes, en parallèle)...")
+    done = [0]
+
+    def sheet(clip):
         try:
-            frames = extract_frames(clip["path"], times)
+            res = contact_sheet(clip["path"], clip["duration"])
         except Exception as exc:
-            log(f"  clip ignoré ({str(exc)[:150]})")
+            res = {"error": str(exc)[:150]}
+        done[0] += 1
+        if done[0] % 10 == 0 or done[0] == len(clips):
+            log(f"  {done[0]}/{len(clips)} clips analysés")
+        return res
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        sheets = list(pool.map(sheet, clips))
+
+    skipped = 0
+    for clip, sh in zip(clips, sheets):
+        if "error" in sh:
+            skipped += 1
             continue
-        shown = [(t, f) for t, f in zip(times, frames) if f]
-        if not shown:
-            continue
-        content.append({"type": "text", "text": (
-            f"Clip {clip['id']} « {clip['name']} » — durée {d:.1f} s — images à "
-            + ", ".join(f"{t:.1f} s" for t, _ in shown))})
-        for _, f in shown:
-            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": f}})
+        content.append({"type": "text", "text": f"Clip {clip['id']} « {clip['name']} » — durée {clip['duration']:.1f} s"})
+        content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                                    "data": sh["image"]}})
+    if skipped:
+        log(f"{skipped} clip(s) illisible(s) ignoré(s).")
     return content
 
 
@@ -308,7 +457,8 @@ def plan_montage(clips: List[dict], music_path: Optional[str], settings: Setting
         except Exception as exc:
             log(f"Tempo non détecté ({exc}) : coupes libres.")
 
-    content = _build_content(clips, music, settings, log)
+    candidates = music_candidates(music, settings.target_duration) if music else []
+    content = _build_content(clips, music, candidates, settings, log)
     if client is None:
         import anthropic
         key = settings.resolved_api_key()
@@ -320,7 +470,7 @@ def plan_montage(clips: List[dict], music_path: Optional[str], settings: Setting
     params = dict(
         model=settings.model, max_tokens=16000, system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": content}],
-        output_config={"effort": "high", "format": {"type": "json_schema", "schema": SCHEMA}},
+        output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA}},
     )
     try:
         resp = client.beta.messages.create(betas=["server-side-fallback-2026-07-01"], fallbacks="default", **params)
@@ -338,13 +488,20 @@ def plan_montage(clips: List[dict], music_path: Optional[str], settings: Setting
     for r in data.get("reels", [])[: settings.reel_count]:
         raw_shots = [sh for sh in r.get("shots", []) if sh.get("clip") in by_id]
         shots = snap_shots(raw_shots, by_id, beat, settings.montage_pace)
+        shots = fit_to_bars(shots, by_id, beat)
+        choice = r.get("music_choice", -1)
+        music_start = None
+        if music and candidates:
+            pick = candidates[choice] if isinstance(choice, int) and 0 <= choice < len(candidates) else candidates[0]
+            music_start = pick["start"]
+            log(f"Passage de musique choisi : {music_start:.1f} s ({pick['label']})")
         if shots:
             tags = ["#" + t.strip().lstrip("#").replace(" ", "") for t in r.get("hashtags", []) if t.strip()]
             look = r.get("look", "Naturel")
             if settings.montage_look and settings.montage_look != "Auto":
                 look = settings.montage_look
             reels.append({"title": r.get("title", "Reel"), "description": r.get("description", ""),
-                          "hashtags": tags, "shots": shots, "look": look,
+                          "hashtags": tags, "shots": shots, "look": look, "music_start": music_start,
                           "texts": clean_texts(r.get("texts", []), len(shots))})
     log(f"Claude propose {len(reels)} montage(s).")
     return {"music": music, "reels": reels}

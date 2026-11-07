@@ -43,6 +43,10 @@ def run_task(task: str, payload: dict, log: Callable[[str], None] = print,
         from .montage_ai import plan_montage
         return plan_montage(payload["clips"], payload.get("music"), settings, log=log, client=ai_client)
 
+    if task == "render_texts":
+        from .textfx import render_many
+        return {"results": render_many(payload["items"], payload["folder"], log=log)}
+
     if task == "animate_texts":
         from .motion import animate_texts
         return {"results": animate_texts(payload["items"], payload["folder"], settings, log=log,

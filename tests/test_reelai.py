@@ -349,15 +349,22 @@ class PoolItem:
     def GetClipProperty(self, k): return self.props.get(k)
 
 
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path, monkeypatch):
+    import reelai.config as cfg
+    monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path / "home")
+    monkeypatch.setattr(cfg, "CACHE_DIR", tmp_path / "home" / "cache")
+
+
 def test_media_pool_montage(tmp_path):
     v1, v2, music = tmp_path / "v1.mp4", tmp_path / "v2.mp4", tmp_path / "m.wav"
     make_video(v1)
     make_video(v2)
-    make_click_track(music)
+    make_click_track(music, seconds=30)
     items = [PoolItem("Plan A", str(v1), "Video + Audio", fps="50", frames="200"),
              PoolItem("Plan B", str(v2), "Video", frames="100"),
              PoolItem("Timeline 1", "", "Timeline"),
-             PoolItem("Olivia", str(music), "Audio", frames="300")]
+             PoolItem("Olivia", str(music), "Audio", frames="750")]
     mp = FakeMediaPool(items[0])
     mp.GetRootFolder = lambda: FakeFolder("Master", items[:2], [FakeFolder("Sons", items[2:]),
                                                                    FakeFolder("ReelAI", [PoolItem("old", str(v1), "Video")])])
@@ -369,23 +376,32 @@ def test_media_pool_montage(tmp_path):
 
     items[0].props["Resolution"] = "3840x2160"
     payload = {"reels": [{"title": "Avant / après", "description": "Transformation", "hashtags": ["coiffure"],
-                          "look": "Chaud doré", "texts": [{"shot": 5, "text": "hors plan"}],
+                          "look": "Chaud doré", "music_choice": 1,
+                          "texts": [{"shot": 5, "text": "hors plan", "position": "top"},
+                                    {"shot": 0, "text": "Avant", "position": "top"}],
                           "shots": [{"clip": 2, "start": 0.0, "end": 1.9, "beats": 4, "subject_x": 0.5, "zoom": 1.0},
                                     {"clip": 1, "start": 1.0, "end": 2.1, "beats": 3, "subject_x": 0.8, "zoom": 1.2}]}]}
     client = fake_client(payload)
     s = Settings(output_dir=str(tmp_path / "out"), music_name="", montage_pace="Moyen", instructions="simple",
-                 montage_texts=False)
+                 montage_texts=False, target_duration=4)
     results = pipeline.run(session, s, log=lambda m: None, backend=LocalBackend(ai_client=client))
 
     content = fake_client.last_kwargs["messages"][0]["content"]
-    assert sum(1 for b in content if b["type"] == "image") == 6  # 3 images x 2 clips
-    assert "simple" in content[0]["text"] and "BPM" in content[0]["text"]
+    assert sum(1 for b in content if b["type"] == "image") == 2  # une planche par clip
+    assert "simple" in content[0]["text"] and "BPM" in content[0]["text"] and "1 = B" in content[0]["text"]
     tl = mp.timelines[0]
     video = [c for c in tl.clips if c.get("mediaType") == 1]
     audio = [c for c in tl.clips if c.get("mediaType") == 2]
-    # plan B : 2 s (4 temps à 120 BPM) à 25 i/s ; plan A : 1,5 s (3 temps, minimum en rythme Moyen) à 50 i/s
-    assert [(c["startFrame"], c["endFrame"]) for c in video] == [(0, 49), (50, 123)]
+    # plan B : 2 s (4 temps) à 25 i/s ; plan A : 3 temps allongés à 4 pour finir sur une mesure, à 50 i/s
+    assert [(c["startFrame"], c["endFrame"]) for c in video] == [(0, 49), (50, 149)]
+    info = montage_ai.detect_beats(str(music))
+    chosen = montage_ai.music_candidates(info, s.target_duration)[1]["start"]
     assert audio[0]["trackIndex"] == 1 and audio[0]["recordFrame"] == 90000
+    assert audio[0]["startFrame"] == round(chosen * 25)
+    # textes proposés mais non posés (case décochée), plan sauvegardé pour l'étape suivante
+    saved = pipeline.load_plan(tl.GetName())
+    assert saved["texts"] == [{"shot": 0, "text": "Avant", "position": "top"}]
+    assert not [c for c in tl.clips if c.get("trackIndex") == 3]
     assert results[0].plan.hashtags == ["#coiffure"]
     # plan A (4K, sujet à droite, zoom 1.2) : décalé vers la gauche, borné au bord de l'image
     ta = tl.items[1]
@@ -426,7 +442,7 @@ def test_snap_uses_beats_and_varies_lengths():
 def test_clean_texts():
     t = montage_ai.clean_texts([{"shot": 3, "text": " Fin "}, {"shot": 0, "text": "Hook"}, {"shot": 0, "text": "x"},
                                 {"shot": 9, "text": "hors"}, {"shot": 1, "text": ""}], n_shots=4)
-    assert t == [{"shot": 0, "text": "Hook"}, {"shot": 3, "text": "Fin"}]
+    assert t == [{"shot": 0, "text": "Hook", "position": "bottom"}, {"shot": 3, "text": "Fin", "position": "bottom"}]
 
 
 class TextTimeline(MotionTimeline):
@@ -470,7 +486,7 @@ def test_shot_texts_higgsfield_with_fallback(tmp_path):
              {"clip": 1, "start": 2.0, "end": 3.5, "subject_x": 0.5}]
     positions = {0: (90000, 50), 1: (90050, 38)}
     texts = [{"shot": 0, "text": "Ta coupe, ta signature"}, {"shot": 1, "text": "Réserve"}]
-    clips = {1: {"path": str(v)}}
+    clips = {1: str(v)}
 
     uploads, prompts = [], []
     def run(sid, prompt, on_question=None, timeout=0):
@@ -487,7 +503,8 @@ def test_shot_texts_higgsfield_with_fallback(tmp_path):
     try:
         s = Settings(higgsfield_key="k:s", text_animation="higgsfield")
         warnings = pipeline.add_shot_texts(session, tl, texts, shots, positions, clips, s, str(tmp_path),
-                                           LocalBackend(hf_client=hf), log=lambda m: None, look="Chaud doré")
+                                           LocalBackend(hf_client=hf), log=lambda m: None, look="Chaud doré",
+                                           mode="higgsfield")
     finally:
         motion_mod.download = orig
 
@@ -497,8 +514,10 @@ def test_shot_texts_higgsfield_with_fallback(tmp_path):
     # plan 0 : clip Higgsfield posé sur V2 et coupé à la durée du plan (50 frames à 25 -> 100 à 50 i/s)
     placed = [c for c in tl.clips if c.get("trackIndex") == 2]
     assert placed[0]["recordFrame"] == 90000 and placed[0]["endFrame"] == 99
-    # plan 1 : Higgsfield a échoué -> Text+ animé par Resolve à 90050
-    assert len(tl.titles) == 1 and tl.titles[0][1].tool.inputs["StyledText"] == "Réserve"
+    # plan 1 : Higgsfield a échoué -> texte animé rendu par ReelAI, posé sur V3 à 90050
+    fallback = [c for c in tl.clips if c.get("trackIndex") == 3]
+    assert len(fallback) == 1 and fallback[0]["recordFrame"] == 90050 and fallback[0]["endFrame"] == 75
+    assert imported[-1].endswith(".mov") and os.path.exists(imported[-1])
 
 
 def test_resolve_text_animation_keyframes(tmp_path):
@@ -518,3 +537,49 @@ def test_vertical_frame_is_9_16(tmp_path):
     make_video(v)
     data = montage_ai.vertical_frame(str(v), 1.0, subject_x=0.9)
     assert Image.open(io.BytesIO(data)).size == (1080, 1920)
+
+
+def test_music_candidates_prefers_loud_section_on_bars():
+    music = {"first_beat": 0.2, "bar": 2.0, "bars": [0.2] * 8 + [0.9] * 16 + [0.3] * 8}
+    cands = montage_ai.music_candidates(music, target=16)
+    starts = [c["start"] for c in cands]
+    assert 0.2 + 8 * 2.0 in starts  # début de la partie énergique (montée)
+    assert any("début de section" in c["label"] for c in cands)
+    assert all(round((x - 0.2) / 2.0, 6).is_integer() for x in starts)  # toujours sur une mesure
+
+
+def test_fit_to_bars():
+    clips = {1: {"duration": 10.0}}
+    shots = [{"clip": 1, "start": 0, "end": 1.0}, {"clip": 1, "start": 2, "end": 3.0}]  # 2 + 2 temps
+    assert montage_ai.fit_to_bars(shots, clips, 0.5) == shots
+    shots[1]["end"] = 3.5  # 2 + 3 temps -> le dernier plan passe à 6 temps
+    assert montage_ai.fit_to_bars(shots, clips, 0.5)[-1]["end"] == 5.0  # 5 temps -> 8 temps
+
+
+def test_contact_sheet_and_cache(tmp_path):
+    v = tmp_path / "v.mp4"
+    make_video(v, seconds=6)
+    sheet = montage_ai.contact_sheet(str(v), 6.0)
+    assert sheet["frames"] and all(0 <= f["t"] <= 6 for f in sheet["frames"])
+    assert montage_ai.contact_sheet(str(v), 6.0) == sheet  # relu depuis le cache
+
+
+def test_add_texts_after_montage(tmp_path):
+    v = tmp_path / "v.mp4"
+    make_video(v)
+    session, tl, imported = make_text_session(tmp_path)
+    tl.GetName = lambda: "Reel 1 - Test"
+    pipeline.save_plan("Reel 1 - Test", {
+        "texts": [{"shot": 1, "text": "Réserve ton rendez-vous", "position": "bottom"}],
+        "shots": [{"clip": 1, "start": 0, "end": 2}, {"clip": 1, "start": 2, "end": 3}],
+        "look": "", "out_dir": str(tmp_path / "out"),
+        "positions": {"0": [90000, 50], "1": [90050, 25]}, "paths": {"1": str(v)}})
+    warnings = pipeline.add_texts_to_current_timeline(session, Settings(), log=lambda m: None,
+                                                      backend=LocalBackend(), mode="reelai")
+    assert warnings == []
+    placed = [c for c in tl.clips if c.get("trackIndex") == 3]
+    assert placed[0]["recordFrame"] == 90050 and placed[0]["endFrame"] == 49  # 25 frames à 25 -> 50 à 50 i/s (faux import)
+    import av
+    with av.open(imported[-1]) as c:
+        frames = list(c.decode(video=0))
+        assert len(frames) == 25 and frames[0].format.name.startswith("yuva")

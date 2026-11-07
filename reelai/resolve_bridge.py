@@ -228,7 +228,7 @@ class ResolveSession:
     def build_montage_timeline(self, name: str, shots: List[dict], clips_by_id: dict,
                                music: Optional[dict] = None, music_info: Optional[dict] = None,
                                vertical: bool = True, width: int = 1080, height: int = 1920, log=print,
-                               look: str = "Naturel"):
+                               look: str = "Naturel", music_start: Optional[float] = None):
         """Crée la timeline. Renvoie (timeline, positions) avec positions[index du plan] =
         (frame d'enregistrement, durée en frames de timeline)."""
         self.media_pool.SetCurrentFolder(self._bin())
@@ -276,14 +276,14 @@ class ResolveSession:
 
         if music:
             mfps = music["fps"] or tfps
-            offset = (music_info or {}).get("first_beat", 0.0)
+            offset = music_start if music_start is not None else (music_info or {}).get("first_beat", 0.0)
             start = int(round(offset * mfps))
             end = min(start + int(round(cum * mfps)), music["frames"]) - 1
             ok = self.media_pool.AppendToTimeline([{
                 "mediaPoolItem": music["item"], "startFrame": start, "endFrame": end,
                 "mediaType": 2, "trackIndex": 1, "recordFrame": timeline.GetStartFrame()}])
             if ok:
-                log(f"Musique « {music['name']} » posée sur A1, calée sur le premier temps.")
+                log(f"Musique « {music['name']} » posée sur A1 à partir de {offset:.1f} s, calée sur les temps.")
             else:
                 log("Musique non posée automatiquement : glisse-la sur la piste audio A1.")
 
@@ -371,6 +371,12 @@ class ResolveSession:
         if not items:
             raise RuntimeError(f"Resolve n'a pas pu importer {media_path}")
         item = items[0]
+        for key in ("Alpha mode", "Alpha Mode"):  # textes ReelAI : transparence (alpha droit)
+            try:
+                if media_path.lower().endswith(".mov") and item.SetClipProperty(key, "Straight"):
+                    break
+            except Exception:
+                pass
         while (timeline.GetTrackCount("video") or 0) < track:
             timeline.AddTrack("video")
         try:
