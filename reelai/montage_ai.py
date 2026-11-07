@@ -187,6 +187,12 @@ def snap_shots(shots: List[dict], clips: dict, beat: Optional[float], pace: str)
 # ------------------------------------------------------------- plan IA
 def _build_content(clips: List[dict], music: Optional[dict], settings: Settings,
                    log: Callable[[str], None]) -> List[dict]:
+    try:  # échoue tout de suite (et une seule fois) si les outils image sont inutilisables
+        import av  # noqa: F401
+        from PIL import Image  # noqa: F401
+    except Exception as exc:
+        raise RuntimeError(f"Outils de lecture vidéo indisponibles : {exc}") from exc
+
     clips = sorted(clips, key=lambda c: -c["duration"])[:MAX_IMAGES]
     per_clip = max(1, min(3, MAX_IMAGES // max(1, len(clips))))
     target, _ = PACE.get(settings.montage_pace, PACE["Moyen"])
@@ -208,7 +214,7 @@ def _build_content(clips: List[dict], music: Optional[dict], settings: Settings,
         try:
             frames = extract_frames(clip["path"], times)
         except Exception as exc:
-            log(f"  clip ignoré ({exc})")
+            log(f"  clip ignoré ({str(exc)[:150]})")
             continue
         shown = [(t, f) for t, f in zip(times, frames) if f]
         if not shown:

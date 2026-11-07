@@ -380,3 +380,12 @@ def test_subprocess_backend_reports_errors():
     b = SubprocessBackend(sys.executable)
     with pytest.raises(RuntimeError, match="Tâche inconnue"):
         b.run("nope", {}, Settings(), log=lambda m: None)
+
+
+def test_worker_command_forces_arm64_on_apple_silicon(monkeypatch):
+    from reelai import backend as be
+    monkeypatch.setattr(be, "_apple_silicon", lambda: True)
+    monkeypatch.setattr(be.os.path, "exists", lambda p: True)
+    assert be.worker_command("/py")[:3] == ["/usr/bin/arch", "-arm64", "/py"]
+    monkeypatch.setattr(be, "_apple_silicon", lambda: False)
+    assert be.worker_command("/py") == ["/py", "-m", "reelai.worker"]

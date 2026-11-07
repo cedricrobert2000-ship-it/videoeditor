@@ -52,6 +52,27 @@ class LocalBackend:
         return run_task(task, payload, log=log, ai_client=self.ai_client, hf_client=self.hf_client)
 
 
+def _apple_silicon() -> bool:
+    """Vrai sur un Mac à puce Apple, même si Resolve tourne sous Rosetta (x86_64)."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        out = subprocess.run(["/usr/sbin/sysctl", "-n", "hw.optional.arm64"],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+        return out == "1"
+    except Exception:
+        return False
+
+
+def worker_command(python: str) -> list:
+    cmd = [python, "-m", "reelai.worker"]
+    # Si Resolve tourne sous Rosetta, Python hériterait du mode Intel et ne pourrait
+    # pas charger les paquets installés pour Apple Silicon : on force le mode natif.
+    if _apple_silicon() and os.path.exists("/usr/bin/arch"):
+        cmd = ["/usr/bin/arch", "-arm64"] + cmd
+    return cmd
+
+
 class SubprocessBackend:
     def __init__(self, python: str):
         self.python = python
@@ -66,7 +87,7 @@ class SubprocessBackend:
         for var in ("PYTHONHOME", "PYTHONSTARTUP"):  # Resolve peut les définir pour son propre Python
             env.pop(var, None)
         proc = subprocess.Popen(
-            [self.python, "-m", "reelai.worker", job, out],
+            worker_command(self.python) + [job, out],
             cwd=PACKAGE_ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", errors="replace",
         )
