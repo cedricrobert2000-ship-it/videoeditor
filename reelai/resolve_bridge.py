@@ -78,6 +78,11 @@ class ResolveSession:
         for item in selected:
             if _is_video(item):
                 return item
+        if any(_clip_type(i) == "timeline" for i in selected):
+            raise RuntimeError(
+                "Tu as sélectionné une TIMELINE. Clique sur un CLIP VIDÉO (un fichier comme "
+                "M2U00041) dans le Media Pool, puis relance."
+            )
 
         timeline = self.project.GetCurrentTimeline()
         if timeline:
@@ -279,12 +284,15 @@ class ResolveSession:
             self.project.StartRendering(job_ids, False)
 
 
-def _is_video(item) -> bool:
+def _clip_type(item) -> str:
     try:
-        kind = (item.GetClipProperty("Type") or "").lower()
+        return (item.GetClipProperty("Type") or "").lower()
     except Exception:
-        return False
-    return "video" in kind
+        return ""
+
+
+def _is_video(item) -> bool:
+    return "video" in _clip_type(item)
 
 
 def _parse_fps(value) -> float:

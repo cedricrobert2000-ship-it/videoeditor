@@ -46,47 +46,52 @@ def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None)
     def row(label, widget):
         return ui.HGroup({"Weight": 0}, [ui.Label({"Text": label, "MinimumSize": [170, 0], "Weight": 0}), widget])
 
+    left = ui.VGroup({"Spacing": 5}, [
+        ui.Label({"Text": "<h3>🎬 Reels automatiques</h3>Sélectionne un <b>clip vidéo</b> (pas une timeline) "
+                          "dans le Media Pool, puis clique sur Générer.", "Weight": 0, "WordWrap": True}),
+        row("Clé API Anthropic", ui.LineEdit({"ID": "ApiKey", "Text": s.api_key, "EchoMode": "Password",
+                                                "PlaceholderText": "sk-ant-... (ou variable ANTHROPIC_API_KEY)"})),
+        row("Nombre de reels", ui.SpinBox({"ID": "Count", "Minimum": 1, "Maximum": 10, "Value": s.reel_count})),
+        row("Durée visée (s)", ui.SpinBox({"ID": "Target", "Minimum": 10, "Maximum": 180, "Value": int(s.target_duration)})),
+        row("Durée min / max (s)", ui.HGroup([
+            ui.SpinBox({"ID": "Min", "Minimum": 5, "Maximum": 180, "Value": int(s.min_duration)}),
+            ui.SpinBox({"ID": "Max", "Minimum": 10, "Maximum": 600, "Value": int(s.max_duration)})])),
+        row("Langue de la vidéo", ui.ComboBox({"ID": "Lang"})),
+        row("Précision transcription", ui.ComboBox({"ID": "Whisper"})),
+        ui.Label({"Text": "Consignes pour l'IA (facultatif) :", "Weight": 0}),
+        ui.TextEdit({"ID": "Prompt", "PlainText": s.instructions, "Weight": 1, "MinimumSize": [0, 50],
+                     "PlaceholderText": "Ex : garde les conseils concrets, ton motivant, cible entrepreneurs"}),
+        ui.HGroup({"Weight": 0}, [
+            ui.VGroup([
+                ui.CheckBox({"ID": "Silences", "Text": "Couper les blancs", "Checked": s.remove_silences}),
+                ui.CheckBox({"ID": "Fillers", "Text": "Couper les « euh »", "Checked": s.remove_fillers}),
+                ui.CheckBox({"ID": "Vertical", "Text": "Vertical 9:16", "Checked": s.vertical})]),
+            ui.VGroup([
+                ui.CheckBox({"ID": "Subs", "Text": "Sous-titres", "Checked": s.subtitles}),
+                ui.CheckBox({"ID": "Upper", "Text": "Sous-titres MAJUSCULES", "Checked": s.subtitle_uppercase}),
+                ui.CheckBox({"ID": "Render", "Text": "Exporter en MP4", "Checked": s.render})])]),
+        ui.Button({"ID": "Go", "Text": "🎬 Générer les reels", "Weight": 0, "MinimumSize": [0, 34]}),
+    ])
+    right = ui.VGroup({"Spacing": 5}, [
+        ui.Label({"Text": "<h3>✨ Motion design (Higgsfield)</h3>Ouvre la timeline d'un reel, place la tête de "
+                          "lecture, choisis le texte puis crée le motion.", "Weight": 0, "WordWrap": True}),
+        row("Clé Higgsfield", ui.LineEdit({"ID": "HfKey", "Text": s.higgsfield_key, "EchoMode": "Password",
+                                            "PlaceholderText": "key-id:key-secret"})),
+        row("Texte du motion", ui.LineEdit({"ID": "MotionText", "PlaceholderText": "Ex : Ta coupe, ta signature"})),
+        ui.HGroup({"Weight": 0}, [ui.Label({"Text": "", "MinimumSize": [170, 0], "Weight": 0}),
+                                  ui.Button({"ID": "ReadSub", "Text": "↓ Reprendre le sous-titre sous la tête de lecture"})]),
+        row("Style", ui.ComboBox({"ID": "MotionStyle"})),
+        row("Durée (s)", ui.SpinBox({"ID": "MotionDur", "Minimum": 3, "Maximum": 10, "Value": int(s.motion_duration)})),
+        ui.CheckBox({"ID": "MotionOverlay", "Text": "Texte net ajouté par Resolve (recommandé)",
+                     "Checked": s.motion_text_overlay, "Weight": 0}),
+        ui.Button({"ID": "Motion", "Text": "✨ Créer le motion", "Weight": 0, "MinimumSize": [0, 34]}),
+        ui.Label({"Text": "<b>Messages :</b>", "Weight": 0}),
+        ui.TextEdit({"ID": "Status", "ReadOnly": True, "Weight": 1, "MinimumSize": [0, 120], "PlainText": "Prêt."}),
+        ui.Button({"ID": "Close", "Text": "Fermer", "Weight": 0}),
+    ])
     win = disp.AddWindow(
-        {"ID": "ReelAIWin", "WindowTitle": "ReelAI - Reels automatiques par IA", "Geometry": [200, 120, 560, 720]},
-        ui.VGroup({"Spacing": 6}, [
-            ui.Label({"Text": "<h2>ReelAI</h2>Sélectionne une vidéo dans le Media Pool puis clique sur Générer.",
-                      "Weight": 0, "WordWrap": True}),
-            row("Clé API Anthropic", ui.LineEdit({"ID": "ApiKey", "Text": s.api_key, "EchoMode": "Password",
-                                                    "PlaceholderText": "sk-ant-... (ou variable ANTHROPIC_API_KEY)"})),
-            row("Nombre de reels", ui.SpinBox({"ID": "Count", "Minimum": 1, "Maximum": 10, "Value": s.reel_count})),
-            row("Durée visée (s)", ui.SpinBox({"ID": "Target", "Minimum": 10, "Maximum": 180, "Value": int(s.target_duration)})),
-            row("Durée min / max (s)", ui.HGroup([
-                ui.SpinBox({"ID": "Min", "Minimum": 5, "Maximum": 180, "Value": int(s.min_duration)}),
-                ui.SpinBox({"ID": "Max", "Minimum": 10, "Maximum": 600, "Value": int(s.max_duration)})])),
-            row("Langue de la vidéo", ui.ComboBox({"ID": "Lang"})),
-            row("Précision transcription", ui.ComboBox({"ID": "Whisper"})),
-            ui.Label({"Text": "Consignes pour l'IA (facultatif) :", "Weight": 0}),
-            ui.TextEdit({"ID": "Prompt", "PlainText": s.instructions, "Weight": 1,
-                         "PlaceholderText": "Ex : garde les conseils concrets, ton motivant, cible entrepreneurs"}),
-            ui.CheckBox({"ID": "Silences", "Text": "Couper les blancs", "Checked": s.remove_silences, "Weight": 0}),
-            ui.CheckBox({"ID": "Fillers", "Text": "Couper les « euh », « hum »...", "Checked": s.remove_fillers, "Weight": 0}),
-            ui.CheckBox({"ID": "Vertical", "Text": "Format vertical 9:16 (1080x1920)", "Checked": s.vertical, "Weight": 0}),
-            ui.CheckBox({"ID": "Subs", "Text": "Sous-titres automatiques", "Checked": s.subtitles, "Weight": 0}),
-            ui.CheckBox({"ID": "Upper", "Text": "Sous-titres en MAJUSCULES", "Checked": s.subtitle_uppercase, "Weight": 0}),
-            ui.CheckBox({"ID": "Render", "Text": "Exporter en MP4 automatiquement", "Checked": s.render, "Weight": 0}),
-            ui.HGroup({"Weight": 0}, [
-                ui.Button({"ID": "Go", "Text": "🎬 Générer les reels"}),
-                ui.Button({"ID": "Close", "Text": "Fermer"})]),
-            ui.Label({"Text": "<hr><b>✨ Motion design (Higgsfield)</b> : place la tête de lecture sur "
-                              "la timeline du reel, choisis le texte, puis crée le motion.",
-                      "Weight": 0, "WordWrap": True}),
-            row("Clé Higgsfield", ui.LineEdit({"ID": "HfKey", "Text": s.higgsfield_key, "EchoMode": "Password",
-                                                "PlaceholderText": "key-id:key-secret"})),
-            row("Texte du motion", ui.HGroup([
-                ui.LineEdit({"ID": "MotionText", "PlaceholderText": "Ex : 3 erreurs qui tuent ta croissance"}),
-                ui.Button({"ID": "ReadSub", "Text": "↓ Sous-titre", "Weight": 0})])),
-            row("Style", ui.ComboBox({"ID": "MotionStyle"})),
-            row("Durée (s)", ui.SpinBox({"ID": "MotionDur", "Minimum": 3, "Maximum": 10, "Value": int(s.motion_duration)})),
-            ui.CheckBox({"ID": "MotionOverlay", "Text": "Texte net ajouté par Resolve (recommandé, typo parfaite)",
-                         "Checked": s.motion_text_overlay, "Weight": 0}),
-            ui.Button({"ID": "Motion", "Text": "✨ Créer le motion à la tête de lecture", "Weight": 0}),
-            ui.TextEdit({"ID": "Status", "ReadOnly": True, "Weight": 1, "PlainText": "Prêt."}),
-        ]),
+        {"ID": "ReelAIWin", "WindowTitle": "ReelAI - Reels automatiques par IA", "Geometry": [80, 80, 1080, 600]},
+        ui.HGroup({"Spacing": 16}, [left, right]),
     )
     it = win.GetItems()
     it["Lang"].AddItems([name for _, name in LANGUAGES])
@@ -109,6 +114,17 @@ def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None)
             it["MotionText"].Text = text
         else:
             log("Aucun sous-titre sous la tête de lecture.")
+
+    def guarded(fn):
+        def wrapper(ev):
+            try:
+                fn(ev)
+            except Exception as exc:
+                traceback.print_exc()
+                log(f"Erreur : {exc}")
+                it["Go"].Enabled = True
+                it["Motion"].Enabled = True
+        return wrapper
 
     def on_motion(ev):
         if motion_runner is None:
@@ -143,9 +159,9 @@ def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None)
         log(_run_safely(s, runner, log))
         it["Go"].Enabled = True
 
-    win.On.Go.Clicked = on_go
-    win.On.Motion.Clicked = on_motion
-    win.On.ReadSub.Clicked = on_read_sub
+    win.On.Go.Clicked = guarded(on_go)
+    win.On.Motion.Clicked = guarded(on_motion)
+    win.On.ReadSub.Clicked = guarded(on_read_sub)
     win.On.Close.Clicked = lambda ev: disp.ExitLoop()
     win.On.ReelAIWin.Close = lambda ev: disp.ExitLoop()
     win.Show()
