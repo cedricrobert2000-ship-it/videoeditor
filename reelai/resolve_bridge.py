@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from typing import List, Optional, Sequence, Tuple
 
@@ -170,6 +171,99 @@ class ResolveSession:
             timeline.AddMarker(0, "Blue", name[:60], note, 1)
         except Exception:
             pass
+
+    # ------------------------------------------------------------------ motion
+    @staticmethod
+    def timeline_fps(timeline) -> float:
+        return _parse_fps(timeline.GetSetting("timelineFrameRate"))
+
+    def playhead_frame(self, timeline) -> int:
+        """Position de la tête de lecture en frames absolues (comme GetStart())."""
+        tc = timeline.GetCurrentTimecode() or ""
+        parts = [int(p) for p in re.split(r"[:;.]", tc) if p.isdigit()]
+        if len(parts) != 4:
+            return timeline.GetStartFrame()
+        h, m, s, f = parts
+        nominal = int(round(self.timeline_fps(timeline)))
+        return ((h * 3600 + m * 60 + s) * nominal) + f
+
+    @staticmethod
+    def _subtitle_items(timeline):
+        try:
+            if (timeline.GetTrackCount("subtitle") or 0) < 1:
+                return []
+            return timeline.GetItemListInTrack("subtitle", 1) or []
+        except Exception:
+            return []
+
+    def subtitle_at_playhead(self, timeline) -> str:
+        frame = self.playhead_frame(timeline)
+        for item in self._subtitle_items(timeline):
+            if item.GetStart() <= frame < item.GetEnd():
+                return item.GetName() or ""
+        return ""
+
+    def reel_context(self, timeline) -> str:
+        notes = []
+        try:
+            for marker in (timeline.GetMarkers() or {}).values():
+                notes.append(f"{marker.get('name', '')}: {marker.get('note', '')}")
+        except Exception:
+            pass
+        words = " ".join(i.GetName() or "" for i in self._subtitle_items(timeline))
+        if words:
+            notes.append("Transcript: " + words[:3000])
+        return "\n".join(notes)
+
+    def insert_overlay(self, timeline, media_path: str, record_frame: int, track: int = 2):
+        self.project.SetCurrentTimeline(timeline)
+        self.media_pool.SetCurrentFolder(self._bin())
+        items = self.media_pool.ImportMedia([media_path]) or []
+        if not items:
+            raise RuntimeError(f"Resolve n'a pas pu importer {media_path}")
+        item = items[0]
+        while (timeline.GetTrackCount("video") or 0) < track:
+            timeline.AddTrack("video")
+        try:
+            frames = int(item.GetClipProperty("Frames") or 0)
+        except ValueError:
+            frames = 0
+        info = {"mediaPoolItem": item, "startFrame": 0, "trackIndex": track,
+                "recordFrame": record_frame, "mediaType": 1}
+        if frames > 0:
+            info["endFrame"] = frames - 1
+        if not self.media_pool.AppendToTimeline([info]):
+            raise RuntimeError("Resolve a refusé de poser le motion sur la timeline.")
+
+    def insert_title(self, timeline, text: str, record_frame: int, track: int = 3,
+                     seconds: float = 5.0, rgb=(1.0, 1.0, 1.0)) -> bool:
+        """Ajoute un titre Text+ net (typo parfaite) au-dessus du motion."""
+        try:
+            while (timeline.GetTrackCount("video") or 0) < track:
+                timeline.AddTrack("video")
+            timeline.SetCurrentTimecode(self._frame_to_tc(timeline, record_frame))
+            item = timeline.InsertFusionTitleIntoTimeline("Text+")
+            if not item:
+                return False
+            comp = item.GetFusionCompByIndex(1)
+            tools = list((comp.GetToolList(False, "TextPlus") or {}).values())
+            if not tools:
+                return False
+            tool = tools[0]
+            tool.SetInput("StyledText", text)
+            tool.SetInput("Size", 0.09)
+            for name, value in zip(("Red1", "Green1", "Blue1"), rgb):
+                tool.SetInput(name, value)
+            return True
+        except Exception:
+            return False
+
+    def _frame_to_tc(self, timeline, frame: int) -> str:
+        nominal = int(round(self.timeline_fps(timeline)))
+        s, f = divmod(frame, nominal)
+        m, s = divmod(s, 60)
+        h, m = divmod(m, 60)
+        return f"{h:02d}:{m:02d}:{s:02d}:{f:02d}"
 
     # ------------------------------------------------------------------ render
     def queue_render(self, timeline, output_dir: str, name: str) -> Optional[str]:

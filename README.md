@@ -34,7 +34,7 @@ python3 install.py
 
 > Sur **Mac**, la commande est `python3` (et non `python`). Si tu as installé Python 3.12 depuis python.org, utilise `python3.12 install.py`. Sur Windows, la commande est `python install.py`.
 
-Le script installe les dépendances (`anthropic`, `faster-whisper`). Il copie aussi `ReelAI.py` dans le dossier Scripts de Resolve :
+Le script installe les dépendances (`anthropic`, `faster-whisper`, `higgsfield-client`). Il copie aussi `ReelAI.py` dans le dossier Scripts de Resolve :
 
 | Système | Dossier |
 |---|---|
@@ -57,6 +57,23 @@ Ensuite, **redémarre DaVinci Resolve**.
 Resolve peut sembler figé pendant la transcription, de quelques secondes à quelques minutes selon la longueur de la vidéo. C'est normal. Ensuite, les timelines `Reel 1 - …`, `Reel 2 - …` apparaissent dans le chutier **ReelAI**. Les fichiers `.srt` et les légendes sont rangés dans un dossier `ReelAI/` à côté de ta vidéo.
 
 La transcription est gardée en cache. Si tu relances avec d'autres consignes, seule l'étape de l'IA est refaite, en quelques secondes.
+
+## ✨ Motion design avec Higgsfield
+
+Tu choisis une phrase, ReelAI crée un **clip de motion design pro** adapté au contenu et le pose sur ta timeline.
+
+1. Ouvre la timeline d'un reel et place la **tête de lecture** à l'endroit voulu.
+2. Dans la section **Motion design** de la fenêtre ReelAI, écris ton texte. Tu peux aussi cliquer sur **↓ Sous-titre** pour reprendre la phrase prononcée à cet endroit.
+3. Choisis un style : Auto, Minimal premium, Cinématique, Tech / néon, Luxe, Énergique ou Nature / lifestyle.
+4. Clique sur **✨ Créer le motion à la tête de lecture**.
+
+Voici ce qui se passe ensuite :
+- **Claude** lit le contexte du reel (hook, sous-titres). Il écrit un brief de motion designer : une métaphore visuelle du message, la lumière, le mouvement de caméra et la palette.
+- **Higgsfield** génère le clip 9:16 (de 3 à 10 s) en choisissant le meilleur modèle vidéo pour ce rendu. Compte de 1 à 5 minutes.
+- Le clip est posé sur la piste **V2**, à la tête de lecture.
+- Avec l'option « Texte net ajouté par Resolve » (recommandée), ton texte est ajouté en **Text+** sur V3, dans une couleur choisie par l'IA. Les IA vidéo déforment souvent les lettres, alors que Resolve garantit une typo parfaite. Tu peux ensuite l'animer ou changer la police dans l'inspecteur.
+
+**Clé Higgsfield** : crée-la sur [cloud.higgsfield.ai](https://cloud.higgsfield.ai) et colle-la au format `key-id:key-secret`. Ton compte doit avoir accès à l'**Agent API** et disposer de crédits Higgsfield. Chaque motion consomme des crédits Higgsfield en plus des quelques centimes de Claude.
 
 ## Réglages avancés
 
@@ -107,5 +124,6 @@ reelai/
   subtitles.py         sous-titres style reel (SRT)
   resolve_bridge.py    API de script de DaVinci Resolve
   pipeline.py          orchestration
+  motion.py            motion design (brief Claude + génération Higgsfield)
   ui.py / launcher.py  fenêtre (UIManager de Resolve ou Tkinter)
 ```

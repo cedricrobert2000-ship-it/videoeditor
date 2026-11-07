@@ -47,6 +47,12 @@ class Settings:
     subtitle_max_chars: int = 22
     subtitle_uppercase: bool = True
 
+    # Motion design (Higgsfield)
+    higgsfield_key: str = ""  # format "key-id:key-secret" (cloud.higgsfield.ai)
+    motion_style: str = "Auto"
+    motion_duration: int = 5
+    motion_text_overlay: bool = True  # texte net ajouté par Resolve (recommandé)
+
     # Export
     render: bool = False
     output_dir: str = ""  # vide = dossier "ReelAI" à côté de la vidéo source

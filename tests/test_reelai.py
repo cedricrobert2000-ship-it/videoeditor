@@ -169,3 +169,79 @@ def test_full_pipeline(tmp_path):
     assert "VOICI MON SECRET." in srt and "EUH" not in srt
     assert os.path.exists(results[0].caption_path)
     assert project.started == ["job0"]
+
+
+# ------------------------------------------------------------- motion
+from reelai import motion as motion_mod
+
+
+class FakeTool:
+    def __init__(self): self.inputs = {}
+    def SetInput(self, k, v): self.inputs[k] = v
+
+
+class FakeTitleItem:
+    def __init__(self): self.tool = FakeTool()
+    def GetFusionCompByIndex(self, i):
+        return SimpleNamespace(GetToolList=lambda sel, kind: {1: self.tool})
+
+
+class FakeSub:
+    def __init__(self, start, end, text): self.s, self.e, self.t = start, end, text
+    def GetStart(self): return self.s
+    def GetEnd(self): return self.e
+    def GetName(self): return self.t
+
+
+class MotionTimeline(FakeTimeline):
+    def __init__(self):
+        super().__init__("Reel 1")
+        self.tracks, self.tc, self.title = 1, "01:00:02:05", None
+        self.settings["timelineFrameRate"] = "25"
+    def GetSetting(self, k): return self.settings.get(k)
+    def GetCurrentTimecode(self): return self.tc
+    def SetCurrentTimecode(self, tc): self.tc = tc; return True
+    def GetStartFrame(self): return 90000
+    def GetTrackCount(self, kind): return {"video": self.tracks, "subtitle": 1}[kind]
+    def AddTrack(self, kind): self.tracks += 1; return True
+    def GetItemListInTrack(self, kind, i): return [FakeSub(90000, 90050, "Salut"), FakeSub(90050, 90100, "MON SECRET")]
+    def GetMarkers(self): return {0: {"name": "Mon secret", "note": "hook"}}
+    def InsertFusionTitleIntoTimeline(self, name): self.title = FakeTitleItem(); return self.title
+
+
+def test_motion_end_to_end(tmp_path):
+    tl = MotionTimeline()
+    mp = FakeMediaPool(FakeItem("x"))
+    mp.current = tl
+    mp.ImportMedia = lambda paths: [SimpleNamespace(GetClipProperty=lambda k: "125", path=paths[0])]
+    project = FakeProject(mp)
+    session = ResolveSession(SimpleNamespace(GetProjectManager=lambda: SimpleNamespace(GetCurrentProject=lambda: project)))
+
+    assert session.playhead_frame(tl) == 90055
+    assert session.subtitle_at_playhead(tl) == "MON SECRET"
+
+    brief = {"concept": "Coffre-fort", "video_prompt": "A vault opening", "palette": "gold", "text_color": "#FFCC00"}
+    calls = {}
+
+    def run(session_id, prompt, on_question=None, timeout=0):
+        calls["prompt"] = prompt
+        return SimpleNamespace(status="completed", text="Done: https://cdn.x/a.png https://cdn.x/v.mp4",
+                               asset_urls=["https://cdn.x/a.png", "https://cdn.x/v.mp4"])
+    hf = SimpleNamespace(agents=SimpleNamespace(sessions=SimpleNamespace(
+        create=lambda: SimpleNamespace(session_id="s1"), run=run)))
+
+    s = Settings(output_dir=str(tmp_path), motion_style="Luxe")
+    res = motion_mod.create_motion(session, s, "Mon secret", log=lambda m: None,
+                                   ai_client=fake_client(brief), hf_client=hf,
+                                   downloader=lambda url, folder, name: f"{folder}/m.mp4")
+
+    assert res.source_url == "https://cdn.x/v.mp4"
+    assert "A vault opening" in calls["prompt"] and "9:16" in calls["prompt"]
+    user_prompt = fake_client.last_kwargs["messages"][0]["content"]
+    assert "NO text" in user_prompt and "black and gold" in user_prompt and "hook" in user_prompt
+    placed = tl.clips[0]
+    assert placed["trackIndex"] == 2 and placed["recordFrame"] == 90055 and placed["endFrame"] == 124
+    assert tl.tracks == 3
+    assert tl.title.tool.inputs["StyledText"] == "Mon secret"
+    assert tl.title.tool.inputs["Red1"] == pytest.approx(1.0)
+    assert tl.tc == "01:00:02:05"

@@ -6,6 +6,7 @@ import traceback
 from typing import Callable
 
 from .config import Settings, load_settings, save_settings
+from .motion import STYLES
 
 LANGUAGES = [("fr", "Français"), ("en", "English"), ("es", "Español"), ("de", "Deutsch"),
              ("it", "Italiano"), ("pt", "Português"), ("", "Auto")]
@@ -26,8 +27,18 @@ def _run_safely(settings: Settings, runner: Callable[[Settings, Callable], list]
     return "\n".join(lines)
 
 
+def _run_motion(settings: Settings, motion_runner, text: str, log: Callable) -> str:
+    save_settings(settings)
+    try:
+        result = motion_runner(settings, text, log)
+    except Exception as exc:
+        traceback.print_exc()
+        return f"Erreur : {exc}"
+    return f"✔ Motion « {result.brief.concept} » ajouté ({result.file_path})"
+
+
 # --------------------------------------------------------------- Resolve UI
-def show_resolve_ui(fusion, bmd, runner) -> None:
+def show_resolve_ui(fusion, bmd, runner, motion_runner=None, read_subtitle=None) -> None:
     ui = fusion.UIManager
     disp = bmd.UIDispatcher(ui)
     s = load_settings()
@@ -61,6 +72,19 @@ def show_resolve_ui(fusion, bmd, runner) -> None:
             ui.HGroup({"Weight": 0}, [
                 ui.Button({"ID": "Go", "Text": "🎬 Générer les reels"}),
                 ui.Button({"ID": "Close", "Text": "Fermer"})]),
+            ui.Label({"Text": "<hr><b>✨ Motion design (Higgsfield)</b> : place la tête de lecture sur "
+                              "la timeline du reel, choisis le texte, puis crée le motion.",
+                      "Weight": 0, "WordWrap": True}),
+            row("Clé Higgsfield", ui.LineEdit({"ID": "HfKey", "Text": s.higgsfield_key, "EchoMode": "Password",
+                                                "PlaceholderText": "key-id:key-secret"})),
+            row("Texte du motion", ui.HGroup([
+                ui.LineEdit({"ID": "MotionText", "PlaceholderText": "Ex : 3 erreurs qui tuent ta croissance"}),
+                ui.Button({"ID": "ReadSub", "Text": "↓ Sous-titre", "Weight": 0})])),
+            row("Style", ui.ComboBox({"ID": "MotionStyle"})),
+            row("Durée (s)", ui.SpinBox({"ID": "MotionDur", "Minimum": 3, "Maximum": 10, "Value": int(s.motion_duration)})),
+            ui.CheckBox({"ID": "MotionOverlay", "Text": "Texte net ajouté par Resolve (recommandé, typo parfaite)",
+                         "Checked": s.motion_text_overlay, "Weight": 0}),
+            ui.Button({"ID": "Motion", "Text": "✨ Créer le motion à la tête de lecture", "Weight": 0}),
             ui.TextEdit({"ID": "Status", "ReadOnly": True, "Weight": 1, "PlainText": "Prêt."}),
         ]),
     )
@@ -71,9 +95,33 @@ def show_resolve_ui(fusion, bmd, runner) -> None:
     it["Whisper"].AddItems(WHISPER_MODELS)
     it["Whisper"].CurrentIndex = WHISPER_MODELS.index(s.whisper_model) if s.whisper_model in WHISPER_MODELS else 2
 
+    styles = list(STYLES)
+    it["MotionStyle"].AddItems(styles)
+    it["MotionStyle"].CurrentIndex = styles.index(s.motion_style) if s.motion_style in styles else 0
+
     def log(msg):
         print(f"[ReelAI] {msg}")
         it["Status"].Append(msg)
+
+    def on_read_sub(ev):
+        text = read_subtitle() if read_subtitle else ""
+        if text:
+            it["MotionText"].Text = text
+        else:
+            log("Aucun sous-titre sous la tête de lecture.")
+
+    def on_motion(ev):
+        if motion_runner is None:
+            return
+        s.api_key = it["ApiKey"].Text.strip()
+        s.higgsfield_key = it["HfKey"].Text.strip()
+        s.motion_style = styles[int(it["MotionStyle"].CurrentIndex)]
+        s.motion_duration = int(it["MotionDur"].Value)
+        s.motion_text_overlay = bool(it["MotionOverlay"].Checked)
+        it["Motion"].Enabled = False
+        it["Status"].PlainText = "Création du motion... (Resolve peut sembler figé quelques minutes)"
+        log(_run_motion(s, motion_runner, it["MotionText"].Text, log))
+        it["Motion"].Enabled = True
 
     def on_go(ev):
         s.api_key = it["ApiKey"].Text.strip()
@@ -96,6 +144,8 @@ def show_resolve_ui(fusion, bmd, runner) -> None:
         it["Go"].Enabled = True
 
     win.On.Go.Clicked = on_go
+    win.On.Motion.Clicked = on_motion
+    win.On.ReadSub.Clicked = on_read_sub
     win.On.Close.Clicked = lambda ev: disp.ExitLoop()
     win.On.ReelAIWin.Close = lambda ev: disp.ExitLoop()
     win.Show()
@@ -104,7 +154,7 @@ def show_resolve_ui(fusion, bmd, runner) -> None:
 
 
 # ---------------------------------------------------------------- Tkinter
-def show_tk_ui(runner) -> None:
+def show_tk_ui(runner, motion_runner=None, read_subtitle=None) -> None:
     import tkinter as tk
     from tkinter import ttk
 
@@ -164,4 +214,34 @@ def show_tk_ui(runner) -> None:
         log(_run_safely(s, runner, log))
 
     ttk.Button(frm, text="Générer les reels", command=go).grid(row=r, column=0, columnspan=2, pady=6)
+
+    # Motion design
+    m = r + 2
+    ttk.Separator(frm).grid(row=m, column=0, columnspan=2, sticky="ew", pady=6)
+    hf_key = tk.StringVar(value=s.higgsfield_key)
+    motion_text = tk.StringVar()
+    style = tk.StringVar(value=s.motion_style)
+    overlay = tk.BooleanVar(value=s.motion_text_overlay)
+    for i, (label, widget) in enumerate([
+        ("Clé Higgsfield", ttk.Entry(frm, textvariable=hf_key, show="•", width=40)),
+        ("Texte du motion", ttk.Entry(frm, textvariable=motion_text, width=40)),
+        ("Style", ttk.Combobox(frm, values=list(STYLES), textvariable=style)),
+    ], start=m + 1):
+        ttk.Label(frm, text=label).grid(row=i, column=0, sticky="w")
+        widget.grid(row=i, column=1, sticky="ew")
+    ttk.Checkbutton(frm, text="Texte net ajouté par Resolve", variable=overlay).grid(row=m + 4, column=1, sticky="w")
+
+    def read_sub():
+        text = read_subtitle() if read_subtitle else ""
+        if text:
+            motion_text.set(text)
+
+    def motion():
+        s.api_key = v["api_key"].get()
+        s.higgsfield_key, s.motion_style, s.motion_text_overlay = hf_key.get(), style.get(), overlay.get()
+        log(_run_motion(s, motion_runner, motion_text.get(), log))
+
+    ttk.Button(frm, text="↓ Sous-titre à la tête de lecture", command=read_sub).grid(row=m + 5, column=0, pady=4)
+    ttk.Button(frm, text="✨ Créer le motion", command=motion).grid(row=m + 5, column=1, pady=4)
+    status.grid(row=m + 6, column=0, columnspan=2, pady=6)
     root.mainloop()
